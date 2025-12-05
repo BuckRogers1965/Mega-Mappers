@@ -1,0 +1,43 @@
+{
+    "colors": {
+        "background": [
+            20,
+            25,
+            40
+        ],
+        "ink": [
+            100,
+            255,
+            100
+        ],
+        "grid": [
+            40,
+            50,
+            60
+        ],
+        "grass": [
+            100,
+            100,
+            120
+        ],
+        "water": [
+            50,
+            0,
+            50
+        ]
+    },
+    "vocabulary": {
+        "inn": "Mess Hall",
+        "currency": "Credits",
+        "police": "Security Drones"
+    },
+    "generation_rules": {
+        "dungeon": {
+            "min_room_size": 3,
+            "max_room_size": 8
+        },
+        "world": {
+            "forest_density": 0.1
+        }
+    }
+}

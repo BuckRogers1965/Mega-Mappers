@@ -1,0 +1,43 @@
+{
+    "colors": {
+        "background": [
+            245,
+            235,
+            215
+        ],
+        "ink": [
+            40,
+            30,
+            20
+        ],
+        "grid": [
+            220,
+            210,
+            190
+        ],
+        "grass": [
+            100,
+            150,
+            100
+        ],
+        "water": [
+            100,
+            120,
+            200
+        ]
+    },
+    "vocabulary": {
+        "inn": "Tavern",
+        "currency": "Gold",
+        "police": "City Watch"
+    },
+    "generation_rules": {
+        "dungeon": {
+            "min_room_size": 4,
+            "max_room_size": 12
+        },
+        "world": {
+            "forest_density": 0.4
+        }
+    }
+}
