@@ -49,7 +49,7 @@ class DBManager:
                 title TEXT,
                 description TEXT,
                 metadata TEXT,
-                FOREIGN KEY(node_id) REFERENCES nodes(id)
+                FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
             );""",
 
             """CREATE TABLE IF NOT EXISTS vectors (
@@ -58,10 +58,9 @@ class DBManager:
                 type TEXT, 
                 points_json TEXT,
                 width INTEGER,
-                FOREIGN KEY(node_id) REFERENCES nodes(id)
+                FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
             );""",
             
-            # NEW: Restored NPCs table
             """CREATE TABLE IF NOT EXISTS npcs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 node_id INTEGER NOT NULL,
@@ -71,12 +70,13 @@ class DBManager:
                 hook TEXT,
                 location TEXT,
                 metadata TEXT,
-                FOREIGN KEY(node_id) REFERENCES nodes(id)
+                FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
             );"""
         ]
 
         try:
             with self.get_connection() as conn:
+                conn.execute("PRAGMA foreign_keys = ON;")
                 for q in queries:
                     conn.execute(q)
                 conn.commit()
@@ -146,6 +146,21 @@ class DBManager:
         sql = f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?"
         with self.get_connection() as conn: conn.execute(sql, tuple(params)); conn.commit()
 
+    def delete_node_and_children(self, node_id: int):
+        """
+        Deletes a node and all its associated data (markers, vectors, npcs)
+        by leveraging ON DELETE CASCADE.
+        """
+        print(f"DB: Deleting node {node_id} and all associated children.")
+        with self.get_connection() as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            # Deleting the node will cascade to markers, vectors, and npcs.
+            # It will NOT cascade to child nodes, so we handle that manually if needed.
+            # For this use case, we are only deleting a leaf node (tactical map).
+            conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+            conn.commit()
+
+
     # --- MARKERS ---
     def add_marker(self, node_id, wx, wy, symbol, title, desc="", metadata=None):
         meta_json = json.dumps(metadata if metadata else {})
@@ -157,22 +172,17 @@ class DBManager:
             conn.commit()
     
     def update_marker(self, marker_id, world_x=None, world_y=None, symbol=None, title=None, description=None, metadata=None):
-        updates = []
-        params = []
+        updates, params = [], []
         if world_x is not None: updates.append("world_x=?"); params.append(world_x)
         if world_y is not None: updates.append("world_y=?"); params.append(world_y)
         if symbol is not None: updates.append("symbol=?"); params.append(symbol)
         if title is not None: updates.append("title=?"); params.append(title)
         if description is not None: updates.append("description=?"); params.append(description)
         if metadata is not None: updates.append("metadata=?"); params.append(json.dumps(metadata))
-        
         if not updates: return
-        
         params.append(marker_id)
         sql = f"UPDATE markers SET {', '.join(updates)} WHERE id = ?"
-        with self.get_connection() as conn: 
-            conn.execute(sql, tuple(params))
-            conn.commit()
+        with self.get_connection() as conn: conn.execute(sql, tuple(params)); conn.commit()
 
     def get_markers(self, node_id):
         with self.get_connection() as conn:
@@ -180,10 +190,8 @@ class DBManager:
             results = []
             for r in rows:
                 d = dict(r)
-                try:
-                    d['metadata'] = json.loads(d['metadata']) if d['metadata'] else {}
-                except json.JSONDecodeError:
-                    d['metadata'] = {}
+                try: d['metadata'] = json.loads(d['metadata']) if d['metadata'] else {}
+                except: d['metadata'] = {}
                 results.append(d)
             return results
     
@@ -192,7 +200,7 @@ class DBManager:
             conn.execute("DELETE FROM markers WHERE id = ?", (marker_id,))
             conn.commit()
 
-    # --- NPCs (NEW) ---
+    # --- NPCs ---
     def add_npc(self, node_id: int, npc_data: Dict[str, Any]):
         meta_json = json.dumps(npc_data.get('metadata', {}))
         with self.get_connection() as conn:
@@ -205,8 +213,7 @@ class DBManager:
             conn.commit()
 
     def update_npc(self, npc_id: int, npc_data: Dict[str, Any]):
-        updates = []
-        params = []
+        updates, params = [], []
         for key in ['name', 'role', 'personality', 'hook', 'location', 'metadata']:
             if key in npc_data:
                 value = json.dumps(npc_data[key]) if key == 'metadata' else npc_data[key]
@@ -214,9 +221,7 @@ class DBManager:
         if not updates: return
         params.append(npc_id)
         sql = f"UPDATE npcs SET {', '.join(updates)} WHERE id = ?"
-        with self.get_connection() as conn:
-            conn.execute(sql, tuple(params))
-            conn.commit()
+        with self.get_connection() as conn: conn.execute(sql, tuple(params)); conn.commit()
 
     def get_npcs_for_node(self, node_id: int) -> List[dict]:
         with self.get_connection() as conn:
@@ -224,23 +229,17 @@ class DBManager:
             results = []
             for r in rows:
                 d = dict(r)
-                try:
-                    d['metadata'] = json.loads(d['metadata']) if d['metadata'] else {}
-                except json.JSONDecodeError:
-                    d['metadata'] = {}
+                try: d['metadata'] = json.loads(d['metadata']) if d['metadata'] else {}
+                except: d['metadata'] = {}
                 results.append(d)
             return results
 
-    # --- VECTORS (Roads/Rivers) ---
+    # --- VECTORS ---
     def save_vector(self, node_id, vtype, points, width=5, vector_id=None):
         p_json = json.dumps(points)
         with self.get_connection() as conn:
-            if vector_id:
-                conn.execute("UPDATE vectors SET points_json=?, width=?, type=? WHERE id=?", 
-                             (p_json, width, vtype, vector_id))
-            else:
-                conn.execute("INSERT INTO vectors (node_id, type, points_json, width) VALUES (?,?,?,?)",
-                             (node_id, vtype, p_json, width))
+            if vector_id: conn.execute("UPDATE vectors SET points_json=?, width=?, type=? WHERE id=?", (p_json, width, vtype, vector_id))
+            else: conn.execute("INSERT INTO vectors (node_id, type, points_json, width) VALUES (?,?,?,?)", (node_id, vtype, p_json, width))
             conn.commit()
     
     def get_vectors(self, node_id):

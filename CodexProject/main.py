@@ -21,6 +21,7 @@ from codex_engine.ui.map_viewer import MapViewer
 # Generators
 from codex_engine.generators.world_gen import WorldGenerator
 from codex_engine.generators.local_gen import LocalGenerator
+from codex_engine.generators.tactical_gen import TacticalGenerator
 
 class CodexApp:
     def __init__(self):
@@ -71,6 +72,7 @@ class CodexApp:
             self.clock.tick(60)
 
         # Cleanup
+        if self.map_viewer: self.map_viewer.save_current_state()
         pygame.quit()
         sys.exit()
 
@@ -86,228 +88,130 @@ class CodexApp:
         """Delegates input to the Map Viewer"""
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                # Hierarchy Navigation
                 if self.map_viewer and self.map_viewer.current_node.get('parent_node_id'):
                     self.go_up_level()
                 else:
-                    # Save state before exiting
                     if self.map_viewer: self.map_viewer.save_current_state()
-                    
                     print("Returning to Menu...")
                     self.state = "MENU"
                     self.current_campaign = None
                     self.menu_screen.refresh_list()
                 return
 
-        # Pass event to the universal map viewer
         if self.map_viewer:
             result = self.map_viewer.handle_input(event)
             
-            # Check for Transition Signals (Zooming into Local Map)
-            if result and result.get("action") == "enter_marker":
-                self.enter_local_map(result['marker'])
+            if result:
+                if result.get("action") == "enter_marker":
+                    self.enter_local_map(result['marker'])
+                elif result.get("action") == "go_up_level":
+                    self.go_up_level()
+                elif result.get("action") == "reset_view":
+                    self.reset_tactical_view()
+                elif result.get("action") == "regenerate_tactical":
+                    self.regenerate_tactical_map()
+                elif result.get("action") == "click_zoom":
+                    self.map_viewer.zoom = min(10.0, self.map_viewer.zoom * 2.0)
+
 
     def go_up_level(self):
-        """Returns to the Parent Node (e.g. Battle -> Local -> World)"""
-        if not self.map_viewer.current_node.get('parent_node_id'):
+        if not self.map_viewer or not self.map_viewer.current_node.get('parent_node_id'):
             return
 
         parent_id = self.map_viewer.current_node['parent_node_id']
-        print(f"Going up to Parent Node ID: {parent_id}")
-        
-        # Fetch the actual parent node using the new DB function
         parent_node = self.db.get_node(parent_id)
         
         if parent_node:
-            self.map_viewer.save_current_state() # Save current level state
+            self.map_viewer.save_current_state()
             self.map_viewer.set_node(parent_node)
         else:
-            print(f"CRITICAL ERROR: Parent Node {parent_id} not found in database.")
-
-    def go_up_level_old(self):
-        """Returns to the Parent Node (e.g. Local Map -> World Map)"""
-        parent_id = self.map_viewer.current_node['parent_node_id']
-        print(f"Going up to Parent Node ID: {parent_id}")
-        
-        # We need to find the node by ID.
-        # Since DBManager.get_node_by_coords relies on coords/parent logic, 
-        # we can just use the coords query with parent=None to find the World Map
-        # assuming 1 level of depth for now.
-        
-        # Better: Query specifically for ID.
-        # Since we don't have get_node_by_id exposed in the snippet, we rely on the World Map being at 0,0 root.
-        world_node = self.db.get_node_by_coords(self.current_campaign['id'], None, 0, 0)
-        
-        if world_node:
-            self.map_viewer.save_current_state() # Save local state before leaving
-            self.map_viewer.set_node(world_node)
-        else:
-            print("Error: Could not find World Map.")
+            print(f"CRITICAL ERROR: Parent Node {parent_id} not found.")
 
     def enter_local_map(self, marker):
-        """
-        Transition Logic:
-        1. World Map -> Local Map (Generate/Load)
-        2. Local Map -> Battle/Dungeon Map (Create/Load)
-        """
         print(f"--- Transition Request: {marker['title']} ---")
-        
         current_node = self.map_viewer.current_node
         target_x = int(marker['world_x'])
         target_y = int(marker['world_y'])
 
-        # --- CASE 1: Going from World to Local ---
+        # Case 1: World -> Local
         if current_node['type'] == 'world_map':
-            # Check DB
-            existing_node = self.db.get_node_by_coords(
-                self.current_campaign['id'], 
-                parent_id=current_node['id'], 
-                x=target_x, 
-                y=target_y
-            )
-            
+            existing_node = self.db.get_node_by_coords(self.current_campaign['id'], parent_id=current_node['id'], x=target_x, y=target_y)
             if existing_node:
-                print("Loading existing local map...")
                 self.map_viewer.save_current_state()
                 self.map_viewer.set_node(existing_node)
             else:
-                print("Generating NEW local map...")
                 self.display_loading_screen()
-                
                 gen = LocalGenerator(self.db)
                 gen.generate_local_map(current_node, marker, self.current_campaign['id'])
-                
-                new_node = self.db.get_node_by_coords(
-                    self.current_campaign['id'], 
-                    current_node['id'], 
-                    target_x, target_y
-                )
-                
+                new_node = self.db.get_node_by_coords(self.current_campaign['id'], current_node['id'], target_x, target_y)
                 self.map_viewer.save_current_state()
                 self.map_viewer.set_node(new_node)
 
-        # --- CASE 2: Going from Local to Battle/Dungeon (Layer 3) ---
+        # Case 2: Local -> Tactical
         elif current_node['type'] == 'local_map':
-            # Check DB
-            existing_node = self.db.get_node_by_coords(
-                self.current_campaign['id'], 
-                parent_id=current_node['id'], 
-                x=target_x, 
-                y=target_y
-            )
-
+            existing_node = self.db.get_node_by_coords(self.current_campaign['id'], parent_id=current_node['id'], x=target_x, y=target_y)
             if existing_node:
-                print("Loading existing battle map...")
                 self.map_viewer.save_current_state()
                 self.map_viewer.set_node(existing_node)
             else:
-                print("Creating NEW battle map node...")
-                # Determine type
-                node_type = "dungeon" if "dungeon" in marker['symbol'] or "skull" in marker['symbol'] else "building"
-                
-                # Create Node (No generator yet, just empty node)
-                new_id = self.db.create_node(
-                    self.current_campaign['id'], 
-                    node_type, 
-                    current_node['id'], 
-                    target_x, target_y, 
-                    marker['title']
-                )
-                
-                # Set basic metadata so renderer doesn't crash
-                self.db.update_node_data(new_id, geometry={}, metadata={"grid_size": 32, "sea_level": -9999})
-                
-                new_node = self.db.get_node_by_coords(
-                    self.current_campaign['id'], 
-                    current_node['id'], 
-                    target_x, target_y
-                )
-                
+                self.display_loading_screen()
+                gen = TacticalGenerator(self.db)
+                new_id = gen.generate_tactical_map(current_node, marker, self.current_campaign['id'])
+                new_node = self.db.get_node(new_id)
                 self.map_viewer.save_current_state()
                 self.map_viewer.set_node(new_node)
+                
+    def reset_tactical_view(self):
+        if not self.map_viewer: return
+        node = self.map_viewer.current_node
+        geo = node.get('geometry_data', {})
+        self.map_viewer.cam_x = geo.get('width', 30) / 2
+        self.map_viewer.cam_y = geo.get('height', 30) / 2
+        self.map_viewer.zoom = 1.0
 
-    def enter_local_map_old(self, marker):
-        """
-        Transition Logic:
-        1. Checks if a child map already exists for this marker.
-        2. If yes, load it.
-        3. If no, Generate it (Extract Terrain + Imprint Vectors + Populate).
-        """
-        print(f"--- Transition Request: {marker['title']} ---")
+    def regenerate_tactical_map(self):
+        if not self.map_viewer or self.map_viewer.current_node['type'] not in ['dungeon_level', 'building_interior']:
+            return
         
-        # Prevent infinite recursion for now
-        if self.map_viewer.current_node['type'] == 'local_map':
-            print("Already in local map. Nesting limit reached.")
+        # This is a destructive operation. We delete the current node and remake it.
+        # 1. Get parent and marker info
+        current_node = self.map_viewer.current_node
+        parent_node = self.db.get_node(current_node['parent_node_id'])
+        
+        # Find the marker that created this node
+        markers_on_parent = self.db.get_markers(parent_node['id'])
+        source_marker = None
+        for m in markers_on_parent:
+            if int(m['world_x']) == current_node['grid_x'] and int(m['world_y']) == current_node['grid_y']:
+                source_marker = m
+                break
+        
+        if not source_marker:
+            print("Error: Could not find source marker to regenerate from.")
             return
 
-        target_x = int(marker['world_x'])
-        target_y = int(marker['world_y'])
-        
-        # Check DB
-        existing_node = self.db.get_node_by_coords(
-            self.current_campaign['id'], 
-            parent_id=self.map_viewer.current_node['id'], 
-            x=target_x, 
-            y=target_y
-        )
-        
-        if existing_node:
-            print("Loading existing local map...")
-            self.map_viewer.save_current_state() # Save world state
-            self.map_viewer.set_node(existing_node)
-        else:
-            print("Generating NEW local map...")
-            self.display_loading_screen()
-            
-            gen = LocalGenerator(self.db)
-            # This generates the file, saves it, creates DB vector records, and DB markers
-            new_node_id = gen.generate_local_map(self.map_viewer.current_node, marker, self.current_campaign['id'])
-            
-            # Fetch the newly created node
-            new_node = self.db.get_node_by_coords(
-                self.current_campaign['id'], 
-                self.map_viewer.current_node['id'], 
-                target_x, target_y
-            )
-            
-            self.map_viewer.save_current_state() # Save world state
-            self.map_viewer.set_node(new_node)
+        # 2. Delete current node and its children (markers)
+        self.db.delete_node_and_children(current_node['id'])
+
+        # 3. Regenerate and transition
+        self.enter_local_map(source_marker)
 
     def load_campaign(self, campaign_id, theme_id):
-        """
-        The Logic Core:
-        1. Loads Campaign Data
-        2. Sets the Theme
-        3. Checks for existing World Map (Persistence)
-        4. If missing, triggers procedural generation
-        5. Switches View
-        """
         print(f"--- Loading Campaign ID: {campaign_id} ---")
-        
-        # 1. Setup Data
         self.current_campaign = self.db.get_campaign(campaign_id)
         self.theme_manager.load_theme(theme_id)
         
-        # 2. Initialize the Universal Map Viewer
-        self.map_viewer = MapViewer(self.screen, self.theme_manager)
+        if not self.map_viewer:
+            self.map_viewer = MapViewer(self.screen, self.theme_manager)
         
-        # 3. 'Schrödinger's Map' Logic
         world_node = self.db.get_node_by_coords(campaign_id, parent_id=None, x=0, y=0)
         
         if not world_node:
             self.display_loading_screen()
-            
-            # GENERATION STEP
-            print("No world map found. Initializing World Generator...")
             generator = WorldGenerator(self.theme_manager, self.db)
-            
-            # This function runs Noise + AI and saves to DB
             generator.generate_world_node(campaign_id)
-            
-            # Fetch the newly created node
             world_node = self.db.get_node_by_coords(campaign_id, parent_id=None, x=0, y=0)
 
-        # 4. Inject Data into Viewer
         if world_node:
             print(f"Loaded Node: {world_node.get('name')}")
             self.map_viewer.set_node(world_node)
@@ -317,18 +221,11 @@ class CodexApp:
             self.state = "MENU"
 
     def display_loading_screen(self):
-        """Forces a render pass to show loading text."""
         self.screen.fill((20, 20, 30))
-        
         font = pygame.font.Font(None, 48)
-        text = font.render("Generating Terrain...", True, (200, 200, 200))
-        subtext = pygame.font.Font(None, 24).render("Calculating Erosion & Vector Imprints...", True, (150, 150, 150))
-        
-        rect = text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 20))
-        sub_rect = subtext.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 30))
-        
+        text = font.render("Generating...", True, (200, 200, 200))
+        rect = text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2))
         self.screen.blit(text, rect)
-        self.screen.blit(subtext, sub_rect)
         pygame.display.flip()
 
 if __name__ == "__main__":
