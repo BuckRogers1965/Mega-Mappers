@@ -388,53 +388,330 @@ class GeoController(BaseController):
             pygame.draw.rect(screen, (0,0,0,150), t_rect.inflate(4, 2))
             screen.blit(title_surf, t_rect)
 
-
     def render_player_view_surface(self):
-        print(f"  [2] Inside {self.__class__.__name__}.render_player_view_surface()...")
+        # 1. SETUP
         view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
+        if not view_marker or not self.render_strategy: return None
+        if not hasattr(self.render_strategy, 'heightmap'): return None
         
-        if not view_marker:
-            print("  [3] No ACTIVE view marker found in this controller. Returning None.")
-            return None
-        
-        if not self.render_strategy: # or self.render_strategy for geo
-            print("  [3] Renderer not available. Returning None.")
-            return None
+        heightmap = self.render_strategy.heightmap
+        h_map_h, h_map_w = heightmap.shape
 
-        print(f"  [3] Found active view marker '{view_marker['title']}'. Preparing to render from its perspective.")
-        temp_surface = pygame.Surface((1920, 1080))
+        meta = view_marker.get('metadata', {})
+        zoom = meta.get('zoom', 1.5)
         
-                # --- ADD THIS DRAW CALL ---
-        self.render_strategy.draw(
-            temp_surface, 
-            view_marker['world_x'], 
-            view_marker['world_y'], 
-            view_marker['metadata'].get('zoom', 1.5),
-            temp_surface.get_width(),
-            temp_surface.get_height(),
-            self.slider_water.value, # Use current slider value
-            self.vectors
-        )
+        w, h = 1920, 1080
+        center_x, center_y = w // 2, h // 2
         
+        # Base Map
+        temp_surface = pygame.Surface((w, h))
+        self.draw_map(temp_surface, view_marker['world_x'], view_marker['world_y'], zoom, w, h)
+
+        # --- HIGH GROUND RAYCASTING ---
+        mx, my = view_marker['world_x'], view_marker['world_y']
+        
+        start_x_int, start_y_int = int(mx), int(my)
+
+        # 1. DETERMINE EYE HEIGHT
+        # We add a small buffer (0.01 = 1% of total world height) to simulate standing UP.
+        STANDING_HEIGHT = 0.01 
+
+        if 0 <= start_x_int < h_map_w and 0 <= start_y_int < h_map_h:
+            ground_z = heightmap[start_y_int, start_x_int]
+            eye_height = ground_z + STANDING_HEIGHT
+        else:
+            eye_height = 0.3
+
+        # 2. VIEW DISTANCE (Screen Edge)
+        max_dist = (math.sqrt(w**2 + h**2) / 2.0) / zoom
+
+        polygon_points = []
+        num_rays = 1800
+        step_angle = (2 * math.pi) / num_rays
+        step_size = 0.2 
+        
+        for i in range(num_rays):
+            angle = i * step_angle
+            sin_a = math.sin(angle)
+            cos_a = math.cos(angle)
+            
+            curr_x, curr_y = mx, my
+            dist = 0
+            
+            # Default to seeing the edge of the screen
+            hit_x, hit_y = curr_x + (cos_a * max_dist), curr_y + (sin_a * max_dist)
+            
+            # Track previous height to detect peaks
+            # We start at eye level.
+            prev_z = eye_height
+
+            while dist < max_dist:
+                dist += step_size
+                curr_x += cos_a * step_size
+                curr_y += sin_a * step_size
+                
+                grid_x, grid_y = int(curr_x), int(curr_y)
+                
+                if 0 <= grid_x < h_map_w and 0 <= grid_y < h_map_h:
+                    target_z = heightmap[grid_y, grid_x]
+                    
+                    # LOGIC:
+                    # 1. If below eye level, it is always visible (valleys/plains).
+                    # 2. If above eye level, it is visible ONLY if it is higher than the previous step (climbing).
+                    # 3. If above eye level AND lower than previous step, we passed the peak. Blocked.
+
+                    if target_z <= eye_height:
+                        # We are looking down/straight. Visible.
+                        # Reset prev_z to eye_height so if we hit a wall next, 
+                        # we compare against eye level, not the valley floor.
+                        prev_z = eye_height
+                    else:
+                        # We are looking UP (Obstruction candidate)
+                        if target_z >= prev_z:
+                            # It is climbing (facing us). Visible.
+                            # Update prev_z so we keep climbing.
+                            prev_z = target_z
+                        else:
+                            # It started decreasing while above eye level. 
+                            # This is the "Backside" of the mountain. View Blocked.
+                            hit_x, hit_y = curr_x, curr_y
+                            break
+                else:
+                    # End of Map Data
+                    hit_x, hit_y = curr_x, curr_y
+                    break
+            
+            screen_x = center_x + (hit_x - mx) * zoom
+            screen_y = center_y + (hit_y - my) * zoom
+            polygon_points.append((screen_x, screen_y))
+
+        # 4. COMPOSITE
+        
+        # Shadow Layer (Full Black)
+        shadow_layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        shadow_layer.fill((0, 0, 0, 255)) 
+        
+        # Cut out the visible polygon
+        if len(polygon_points) > 2:
+            mask_surf = pygame.Surface((w, h), pygame.SRCALPHA) 
+            mask_surf.fill((0,0,0,0)) 
+            
+            # Draw the visible area as Opaque White on the mask
+            pygame.draw.polygon(mask_surf, (255, 255, 255, 255), polygon_points)
+            
+            # Subtract mask from shadow
+            shadow_layer.blit(mask_surf, (0,0), special_flags=pygame.BLEND_RGBA_SUB)
+
+        temp_surface.blit(shadow_layer, (0, 0))
         return temp_surface
 
     def render_player_view_surface_old(self):
+        # 1. SETUP
         view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
-        if not view_marker or not self.render_strategy:
-            return None
-
-        temp_surface = pygame.Surface((1920, 1080))
+        if not view_marker or not self.render_strategy: return None
+        if not hasattr(self.render_strategy, 'heightmap'): return None
         
-        self.render_strategy.draw(
-            temp_surface, 
-            view_marker['world_x'], 
-            view_marker['world_y'], 
-            view_marker['metadata'].get('zoom', 1.5),
-            temp_surface.get_width(),
-            temp_surface.get_height(),
-            self.get_metadata_updates().get('sea_level', 0), # Pass current settings
-            self.vectors
-        )
+        heightmap = self.render_strategy.heightmap
+        h_map_h, h_map_w = heightmap.shape
+
+        meta = view_marker.get('metadata', {})
+        zoom = meta.get('zoom', 1.5)
+        
+        w, h = 1920, 1080
+        center_x, center_y = w // 2, h // 2
+        
+        # Base Map
+        temp_surface = pygame.Surface((w, h))
+        self.draw_map(temp_surface, view_marker['world_x'], view_marker['world_y'], zoom, w, h)
+
+        # --- HIGH GROUND RAYCASTING ---
+        mx, my = view_marker['world_x'], view_marker['world_y']
+        
+        start_x_int, start_y_int = int(mx), int(my)
+
+        # 1. DETERMINE EYE HEIGHT
+        # Add a tiny buffer so we don't clip into the exact pixel we are standing on.
+        STANDING_HEIGHT = 0.01 
+
+        if 0 <= start_x_int < h_map_w and 0 <= start_y_int < h_map_h:
+            ground_z = heightmap[start_y_int, start_x_int]
+            eye_height = ground_z + STANDING_HEIGHT
+        else:
+            eye_height = 0.5
+
+        # 2. VIEW DISTANCE
+        max_dist = (math.sqrt(w**2 + h**2) / 2.0) / zoom
+
+        polygon_points = []
+        num_rays = 720
+        step_angle = (2 * math.pi) / num_rays
+        step_size = 1.0 
+        
+        for i in range(num_rays):
+            angle = i * step_angle
+            sin_a = math.sin(angle)
+            cos_a = math.cos(angle)
+            
+            curr_x, curr_y = mx, my
+            dist = 0
+            
+            # Default hit to max distance
+            hit_x, hit_y = curr_x + (cos_a * max_dist), curr_y + (sin_a * max_dist)
+            
+            # Track the highest slope we've seen so far.
+            # Start very low so we can see the ground immediately in front of us.
+            max_slope = -9999.0
+            
+            while dist < max_dist:
+                dist += step_size
+                curr_x += cos_a * step_size
+                curr_y += sin_a * step_size
+                
+                grid_x, grid_y = int(curr_x), int(curr_y)
+                
+                if 0 <= grid_x < h_map_w and 0 <= grid_y < h_map_h:
+                    target_z = heightmap[grid_y, grid_x]
+                    
+                    # LOGIC: SLOPE CHECK
+                    # We calculate the angle (slope) from our eye to the target.
+                    # Multiplier 100.0 makes Z-height differences significant relative to distance.
+                    current_slope = (target_z - eye_height) / dist * 100.0
+                    
+                    if current_slope >= max_slope:
+                        # We are looking at the "front" of a hill or flat ground.
+                        # It pushes the horizon up, so we update max_slope.
+                        max_slope = current_slope
+                    else:
+                        # The slope dropped BELOW our max.
+                        # This means we went over a peak and are looking into the "shadow" behind it.
+                        # The view is blocked.
+                        hit_x, hit_y = curr_x, curr_y
+                        break
+                else:
+                    # End of Map Data
+                    hit_x, hit_y = curr_x, curr_y
+                    break
+            
+            screen_x = center_x + (hit_x - mx) * zoom
+            screen_y = center_y + (hit_y - my) * zoom
+            polygon_points.append((screen_x, screen_y))
+
+        # 4. COMPOSITE
+        
+        # Shadow Layer (Full Black)
+        shadow_layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        shadow_layer.fill((0, 0, 0, 255)) 
+        
+        # Cut out the visible polygon
+        if len(polygon_points) > 2:
+            mask_surf = pygame.Surface((w, h), pygame.SRCALPHA) 
+            mask_surf.fill((0,0,0,0)) 
+            
+            # Draw the visible area as Opaque White on the mask
+            pygame.draw.polygon(mask_surf, (255, 255, 255, 255), polygon_points)
+            
+            # Subtract mask from shadow (makes visible area transparent)
+            shadow_layer.blit(mask_surf, (0,0), special_flags=pygame.BLEND_RGBA_SUB)
+
+        temp_surface.blit(shadow_layer, (0, 0))
+        return temp_surface
+
+    def render_player_view_surface_old(self):
+        # 1. SETUP
+        view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
+        if not view_marker or not self.render_strategy: return None
+        if not hasattr(self.render_strategy, 'heightmap'): return None
+        
+        heightmap = self.render_strategy.heightmap
+        h_map_h, h_map_w = heightmap.shape
+
+        meta = view_marker.get('metadata', {})
+        zoom = meta.get('zoom', 1.5)
+        
+        w, h = 1920, 1080
+        center_x, center_y = w // 2, h // 2
+        
+        # Base Map
+        temp_surface = pygame.Surface((w, h))
+        self.draw_map(temp_surface, view_marker['world_x'], view_marker['world_y'], zoom, w, h)
+
+        # --- HIGH GROUND RAYCASTING ---
+        mx, my = view_marker['world_x'], view_marker['world_y']
+        
+        start_x_int, start_y_int = int(mx), int(my)
+
+        # 1. DETERMINE EYE HEIGHT
+        # We add a small buffer (0.01 = 1% of total world height) to simulate standing UP.
+        # This prevents the pixel immediately in front of your feet from blocking the view.
+        STANDING_HEIGHT = 0.01 
+
+        if 0 <= start_x_int < h_map_w and 0 <= start_y_int < h_map_h:
+            ground_z = heightmap[start_y_int, start_x_int]
+            eye_height = ground_z + STANDING_HEIGHT
+        else:
+            eye_height = 0.5
+
+        # 2. VIEW DISTANCE (Screen Edge)
+        max_dist = (math.sqrt(w**2 + h**2) / 2.0) / zoom
+
+        polygon_points = []
+        num_rays = 720
+        step_angle = (2 * math.pi) / num_rays
+        step_size = 1.0 
+        
+        for i in range(num_rays):
+            angle = i * step_angle
+            sin_a = math.sin(angle)
+            cos_a = math.cos(angle)
+            
+            curr_x, curr_y = mx, my
+            dist = 0
+            
+            # Default to seeing the edge of the screen
+            hit_x, hit_y = curr_x + (cos_a * max_dist), curr_y + (sin_a * max_dist)
+            
+            while dist < max_dist:
+                dist += step_size
+                curr_x += cos_a * step_size
+                curr_y += sin_a * step_size
+                
+                grid_x, grid_y = int(curr_x), int(curr_y)
+                
+                if 0 <= grid_x < h_map_w and 0 <= grid_y < h_map_h:
+                    target_z = heightmap[grid_y, grid_x]
+                    
+                    # LOGIC: OBSTRUCTION CHECK
+                    # If the terrain here is TALLER than my eyes, it blocks the view.
+                    if target_z > eye_height:
+                        hit_x, hit_y = curr_x, curr_y
+                        break
+                else:
+                    # End of Map Data
+                    hit_x, hit_y = curr_x, curr_y
+                    break
+            
+            screen_x = center_x + (hit_x - mx) * zoom
+            screen_y = center_y + (hit_y - my) * zoom
+            polygon_points.append((screen_x, screen_y))
+
+        # 4. COMPOSITE
+        
+        # Shadow Layer (Full Black)
+        shadow_layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        shadow_layer.fill((0, 0, 0, 255)) 
+        
+        # Cut out the visible polygon
+        if len(polygon_points) > 2:
+            mask_surf = pygame.Surface((w, h), pygame.SRCALPHA) 
+            mask_surf.fill((0,0,0,0)) 
+            
+            # Draw the visible area as Opaque White on the mask
+            pygame.draw.polygon(mask_surf, (255, 255, 255, 255), polygon_points)
+            
+            # Subtract mask from shadow
+            shadow_layer.blit(mask_surf, (0,0), special_flags=pygame.BLEND_RGBA_SUB)
+
+        temp_surface.blit(shadow_layer, (0, 0))
         return temp_surface
 
     def get_metadata_updates(self):

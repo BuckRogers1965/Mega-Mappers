@@ -58,28 +58,6 @@ class TacticalController(BaseController):
         self.static_map_surf = None
         self._render_static_map()
         self._init_ui()
-    
-
-    def render_player_view_surface(self):
-        view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
-        if not view_marker:
-            return None
-
-        # Create a surface to draw on
-        temp_surface = pygame.Surface((1920, 1080))
-        
-        # Call the existing draw_map method, but targeted at the temp surface
-        # and from the marker's perspective.
-        self.draw_map(
-            temp_surface,
-            view_marker['world_x'],
-            view_marker['world_y'],
-            view_marker['metadata'].get('zoom', 1.5),
-            temp_surface.get_width(),
-            temp_surface.get_height()
-        )
-        
-        return temp_surface
 
     def _render_static_map(self):
         if self.renderer:
@@ -330,7 +308,139 @@ class TacticalController(BaseController):
             screen.blit(s, (bg_rect.x+10, bg_rect.y+y_off))
             y_off += s.get_height()
 
+    def create_radial_gradient(self, radius):
+        """Creates a radial gradient (White/High-Alpha Center -> Transparent Edge)."""
+        r_val = max(1, int(radius))
+        surf = pygame.Surface((r_val * 2, r_val * 2), pygame.SRCALPHA)
+        
+        # Increase steps for smoother gradient
+        steps = 50
+        
+        # Draw from Outside (Large Radius) to Inside (Small Radius)
+        # Painter's Algorithm: We draw the faint outer layers first, then the bright inner layers on top.
+        for i in range(steps):
+            # t goes from 0.0 (Edge) to 1.0 (Center)
+            t = i / float(steps - 1)
+            
+            # Radius shrinks as t increases
+            current_r = int(r_val * (1 - t))
+            
+            # Alpha increases as we get closer to center
+            # Using t**2 makes the light "hot" in the center and fall off quickly
+            alpha = int(255 * (t**2))
+            
+            if current_r > 0:
+                # Draw white circle with calculated alpha
+                pygame.draw.circle(surf, (255, 255, 255, alpha), (r_val, r_val), current_r)
+            
+        return surf
+    
     def render_player_view_surface(self):
+        # 1. FIND ACTIVE MARKER & SETUP
+        view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
+        if not view_marker or not self.renderer:
+            return None
+
+        # Metadata
+        meta = view_marker.get('metadata', {})
+        radius = meta.get('radius', 15)
+        zoom = meta.get('zoom', 1.5)
+        
+        # Dimensions
+        w, h = 1920, 1080
+        center_x, center_y = w // 2, h // 2
+        
+        # Render the base map
+        temp_surface = pygame.Surface((w, h))
+        self.draw_map(
+            temp_surface,
+            view_marker['world_x'],
+            view_marker['world_y'],
+            zoom,
+            w, h
+        )
+
+        # --- RAYCASTING LIGHTING ---
+
+        mx, my = view_marker['world_x'], view_marker['world_y']
+        sc = self.cell_size * zoom
+        px_radius = radius * sc
+        
+        # Create gradient: High Alpha Center -> Low Alpha Edge
+        light_gradient = self.create_radial_gradient(px_radius)
+
+        # 3. CAST RAYS
+        polygon_points = []
+        # Double the rays for smoother edges
+        num_rays =  7200
+        step_angle = (2 * math.pi) / num_rays
+        
+        for i in range(num_rays):
+            angle = i * step_angle
+            sin_a = math.sin(angle)
+            cos_a = math.cos(angle)
+            
+            dist = 0
+            max_dist = radius
+            hit_wall = False
+            step_size = 0.1 
+            
+            curr_x, curr_y = mx, my
+            
+            while dist < max_dist:
+                dist += step_size
+                curr_x += cos_a * step_size
+                curr_y += sin_a * step_size
+                
+                grid_x, grid_y = int(curr_x), int(curr_y)
+                
+                if 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height:
+                    tile_val = self.grid_data[grid_y][grid_x]
+                    
+                    if tile_val == 0: 
+                        # --- THE FIX: PUSH INTO VOID ---
+                        # Add a small buffer (e.g. 0.3 grid units) so light bleeds onto the wall face
+                        overhang = 0.03 
+                        curr_x += cos_a * overhang
+                        curr_y += sin_a * overhang
+                        
+                        hit_wall = True
+                        break
+                else:
+                    hit_wall = True
+                    break
+            
+            screen_x = center_x + (curr_x - mx) * sc
+            screen_y = center_y + (curr_y - my) * sc
+            polygon_points.append((screen_x, screen_y))
+
+        # 4. COMPOSITE
+        
+        # A. Darkness (Full Black Opaque)
+        darkness = pygame.Surface((w, h), pygame.SRCALPHA)
+        darkness.fill((0, 0, 0, 255))
+        
+        # B. Light Shape Mask
+        light_shape = pygame.Surface((w, h), pygame.SRCALPHA)
+        light_shape.fill((0, 0, 0, 0))
+        if len(polygon_points) > 2:
+            pygame.draw.polygon(light_shape, (255, 255, 255, 255), polygon_points)
+            
+        # C. Apply Gradient to Shape (Multiply)
+        # This trims the gradient to fit inside the walls
+        grad_rect = light_gradient.get_rect(center=(center_x, center_y))
+        light_shape.blit(light_gradient, grad_rect, special_flags=pygame.BLEND_RGBA_MULT)
+        
+        # D. Cut Light from Darkness (Subtract)
+        # High alpha in light_shape removes alpha from darkness (making it transparent)
+        darkness.blit(light_shape, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+        
+        # 5. Final Combine
+        temp_surface.blit(darkness, (0, 0))
+
+        return temp_surface
+
+    def render_player_view_surface_old(self):
         view_marker = next((m for m in self.markers if m.get('metadata', {}).get('is_view_marker') and m['metadata'].get('is_active')), None)
         if not view_marker or not self.renderer:
             return None

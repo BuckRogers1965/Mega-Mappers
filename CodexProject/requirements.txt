@@ -1,0 +1,10 @@
+# Core Game & UI Engine
+pygame>=2.5.0
+
+# Image Processing & Map Data (World Gen, Local Gen, Rendering)
+numpy>=1.24.0
+Pillow>=10.0.0
+scipy>=1.10.0
+
+# AI Content Generation (Gemini)
+google-generativeai>=0.3.0
