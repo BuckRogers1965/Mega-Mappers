@@ -9,7 +9,8 @@ COLOR_GRID = (220, 210, 190)
 class BaseTacticalRenderer:
     def __init__(self, node_data, cell_size):
         self.node = node_data
-        self.geometry = node_data['geometry_data']
+        properties = node_data.get('properties', {})
+        self.geometry = properties['geometry']
         self.grid_data = self.geometry['grid']
         self.width = self.geometry['width']
         self.height = self.geometry['height']

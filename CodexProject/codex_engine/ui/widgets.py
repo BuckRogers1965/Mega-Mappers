@@ -150,7 +150,7 @@ class Slider:
         pygame.draw.rect(surface, color, self.handle_rect, border_radius=3)
 
 class Dropdown:
-    def __init__(self, x, y, w, h, font, options, initial_id=None, max_visible=5):
+    def __init__(self, x, y, w, h, font, options, initial_id=None, max_visible=25):
         self.rect = pygame.Rect(x, y, w, h)
         self.font = font
         self.options = options # List of dicts {'id': 'x', 'name': 'Y'}
@@ -283,90 +283,6 @@ class Dropdown:
                 sb_thumb = pygame.Rect(list_rect.right - sb_width, thumb_y, sb_width, thumb_h)
                 pygame.draw.rect(surface, (150, 150, 150), sb_thumb, border_radius=4)
 
-class Dropdown_old:
-    def __init__(self, x, y, w, h, font, options, initial_id=None):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.font = font
-        self.options = options # List of dicts {'id': 'x', 'name': 'Y'}
-        self.is_open = False
-        self.selected_idx = -1
-        
-        # Find initial selection
-        if initial_id:
-            for i, opt in enumerate(options):
-                if opt['id'] == initial_id:
-                    self.selected_idx = i
-                    break
-        
-        # Style
-        self.color_bg = (30, 30, 40)
-        self.color_border = (100, 100, 120)
-        self.color_hover = (60, 60, 80)
-
-    def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.is_open:
-                # Check clicks in the dropdown list
-                for i in range(len(self.options)):
-                    # Calculate rect for this option
-                    opt_rect = pygame.Rect(self.rect.x, self.rect.bottom + (i * 30), self.rect.width, 30)
-                    if opt_rect.collidepoint(event.pos):
-                        self.selected_idx = i
-                        self.is_open = False
-                        return True
-                # Click outside closes it
-                self.is_open = False
-            else:
-                # Toggle open
-                if self.rect.collidepoint(event.pos):
-                    self.is_open = True
-                    return True
-        return False
-
-    def get_selected_id(self):
-        if self.selected_idx >= 0 and self.selected_idx < len(self.options):
-            return self.options[self.selected_idx]['id']
-        return None
-
-    def draw(self, surface):
-        pygame.draw.rect(surface, self.color_bg, self.rect)
-        pygame.draw.rect(surface, self.color_border, self.rect, 1)
-        
-        text = "Select Blueprint..."
-        if self.selected_idx >= 0:
-            text = self.options[self.selected_idx]['name']
-        
-        surf = self.font.render(text, True, (255, 255, 255))
-        surface.blit(surf, (self.rect.x + 5, self.rect.y + 8))
-        
-        pygame.draw.polygon(surface, (200, 200, 200), [
-            (self.rect.right - 15, self.rect.y + 10),
-            (self.rect.right - 5, self.rect.y + 10),
-            (self.rect.right - 10, self.rect.y + 20)
-        ])
-
-        if self.is_open:
-            list_h = len(self.options) * 30
-            list_rect = pygame.Rect(self.rect.x, self.rect.bottom, self.rect.width, list_h)
-            pygame.draw.rect(surface, (25, 25, 30), list_rect)
-            pygame.draw.rect(surface, self.color_border, list_rect, 1)
-            
-            mx, my = pygame.mouse.get_pos()
-            
-            for i, opt in enumerate(self.options):
-                r = pygame.Rect(self.rect.x, self.rect.bottom + (i * 30), self.rect.width, 30)
-                if r.collidepoint((mx, my)):
-                    pygame.draw.rect(surface, self.color_hover, r)
-                
-                prefix = ""
-                if opt.get('category') == 'Complex': prefix = "[C] "
-                elif opt.get('id') is None: prefix = ""
-                
-                label = prefix + opt['name']
-                
-                txt = self.font.render(label, True, (220, 220, 220))
-                surface.blit(txt, (r.x + 5, r.y + 8))
-
 class ContextMenu:
     def __init__(self, x, y, options, font):
         self.options = options  # List of tuples: ("Label", callback_function)
@@ -431,41 +347,60 @@ class StructureBrowser:
         self.db = db
         self.font = font
         self.on_navigate = on_navigate
-        self.scroll_y = 0
-        
-        # Get full tree
-        full_data = self.db.get_structure_tree(current_node_id)
-        
-        self.structure_data = full_data
-        
         self.buttons = []
         btn_h = 30
+
+        # 1. DISCOVERY: Find the logical root of this structure
+        current_node = self.db.get_node(current_node_id)
         
-        for i, item in enumerate(self.structure_data):
-            indent = (item['depth'] - 1) * 15 # Adjust indent since we skipped root
-            if indent < 0: indent = 0
-            
-            bx = x + indent
-            bw = w - indent - 10
-            by = y + (i * (btn_h + 5))
-            
-            label = item['name']
-            if item['type'] == 'dungeon_level': 
-                label = f"💀 {label}"
-            elif item['type'] == 'building_interior':
-                label = f"└ {label}"
-            else: 
-                label = f"• {label}"
-            
-            base_col = (100, 150, 100) if item['is_current'] else (60, 60, 70)
-            
-            btn = Button(
-                bx, by, bw, btn_h, 
-                label, font, 
-                base_col, (90, 90, 110), (255, 255, 255),
-                lambda nid=item['id']: self.on_navigate(nid)
+        # If we are inside a level, the 'Root' is actually our parent (the POI marker)
+        if current_node['type'] in ['dungeon_level', 'building_interior', 'tactical_map']:
+            root_id = current_node['parent_id']
+            self.root_node = self.db.get_node(root_id)
+            # Siblings + Self
+            self.structure_data = self.db.get_children(root_id)
+        else:
+            # We are at a Map level looking at markers
+            self.root_node = current_node
+            self.structure_data = self.db.get_children(current_node_id)
+
+        # 2. Add the ROOT node as the first "Info" entry
+        if self.root_node:
+            self._add_button(
+                x, y, w, btn_h, 
+                f"ℹ️ {self.root_node['name']}", 
+                (80, 80, 100), # Distinct color for the Header/Info
+                self.root_node['id'],
+                is_root=True
             )
-            self.buttons.append(btn)
+
+        # 3. Add the levels/markers
+        for i, item in enumerate(self.structure_data):
+            # Skip the party view marker in the list
+            if item.get('properties', {}).get('is_view_marker'):
+                continue
+
+            label_text = item.get('name', 'Unknown')
+            is_active_level = item['id'] == current_node_id
+            
+            icon = "📍" if item.get('type') == 'poi' else "•"
+            label = f"{icon} {label_text}"
+            
+            # Active level is highlighted green
+            base_col = (100, 150, 100) if is_active_level else (60, 60, 70)
+            
+            # Offset y by (i+1) because root is at index 0
+            self._add_button(x, y + ((i + 1) * (btn_h + 5)), w, btn_h, label, base_col, item['id'])
+
+    def _add_button(self, x, y, w, h, label, color, node_id, is_root=False):
+        indent = 15
+        btn = Button(
+            x + indent, y, w - indent - 20, h, 
+            label, self.font, 
+            color, (90, 90, 110), (255, 255, 255),
+            lambda nid=node_id: self.on_navigate(nid)
+        )
+        self.buttons.append(btn)
 
     def handle_event(self, event):
         for btn in self.buttons:
@@ -475,63 +410,6 @@ class StructureBrowser:
 
     def draw(self, surface):
         surface.set_clip(self.rect)
-        for btn in self.buttons:
-            btn.draw(surface)
-        surface.set_clip(None)
-
-class StructureBrowser_old:
-    def __init__(self, x, y, w, h, db, current_node_id, font, on_navigate):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.db = db
-        self.font = font
-        self.on_navigate = on_navigate
-        self.scroll_y = 0
-        
-        # Fetch Data
-        self.structure_data = self.db.get_structure_tree(current_node_id)
-        
-        # Create Buttons for each node
-        self.buttons = []
-        btn_h = 30
-        
-        for i, item in enumerate(self.structure_data):
-            # Indent based on depth
-            indent = item['depth'] * 15
-            bx = x + indent
-            bw = w - indent - 10
-            by = y + (i * (btn_h + 5))
-            
-            # Visuals
-            label = item['name']
-            if item['type'] == 'compound': label = f"🏠 {label}"
-            elif item['type'] == 'dungeon_level': label = f"💀 {label}"
-            else: label = f"└ {label}"
-            
-            # Highlight current node
-            base_col = (100, 150, 100) if item['is_current'] else (60, 60, 70)
-            
-            btn = Button(
-                bx, by, bw, btn_h, 
-                label, font, 
-                base_col, (90, 90, 110), (255, 255, 255),
-                lambda nid=item['id']: self.on_navigate(nid)
-            )
-            # Store relative Y for scrolling later if needed
-            btn.rel_y = (i * (btn_h + 5))
-            self.buttons.append(btn)
-
-    def handle_event(self, event):
-        # (Simple scrolling could be added here similar to InfoPanel)
-        for btn in self.buttons:
-            res = btn.handle_event(event)
-            if res: return res # The lambda triggers navigation
-        return None
-
-    def draw(self, surface):
-        # Clip to area
-        surface.set_clip(self.rect)
-        # Optional: draw background
-        # pygame.draw.rect(surface, (30,30,35), self.rect)
         for btn in self.buttons:
             btn.draw(surface)
         surface.set_clip(None)
@@ -582,7 +460,6 @@ class UIScrollPanel:
             track = pygame.Rect(self.rect.right - self.sb_width, self.rect.y, self.sb_width, self.rect.height)
             pygame.draw.rect(screen, (30, 30, 35), track)
             pygame.draw.rect(screen, (100, 100, 100), self.sb_rect, border_radius=5)
-
 
 import textwrap
 

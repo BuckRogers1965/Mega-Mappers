@@ -1,3 +1,4 @@
+# --- START OF FILE CodexProject/codex_server/main.py ---
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,8 +19,7 @@ app.add_middleware(
 )
 
 def get_adapter():
-    # FIX: Correctly instantiate with the database path
-    return SQLTreeAdapter(DBManager("data/codex.db"))
+    return SQLTreeAdapter(DBManager())
 
 @app.get("/api/tree", response_model=List[TreeNodeSummary])
 async def get_roots(adapter = Depends(get_adapter)):

@@ -4,12 +4,25 @@ from codex_engine.core.db_manager import DBManager
 from codex_engine.controllers.geo_controller import GeoController
 from codex_engine.controllers.tactical_controller import TacticalController
 
+# --- INSTRUMENTATION CONFIG ---
+LOG_NONE  = 0
+LOG_INFO  = 1 # Function Enter/Exit
+LOG_DEBUG = 2 # Data Inspection
+APP_VERBOSITY = LOG_DEBUG 
+
+def log(level, message):
+    if APP_VERBOSITY >= level:
+        prefix = ""
+        if level == LOG_INFO: prefix = "[APP INFO]"
+        if level == LOG_DEBUG: prefix = "[APP DEBUG]"
+        print(f"{prefix} {message}")
+
 class MapViewer:
-    def __init__(self, screen, theme_manager, ai_manager):
+    def __init__(self, screen, theme_manager, ai_manager, db_manager):
         self.screen = screen
         self.theme = theme_manager
         self.ai = ai_manager
-        self.db = DBManager()
+        self.db = db_manager
         
         self.cam_x, self.cam_y, self.zoom = 0, 0, 1.0
         self.current_node = None
@@ -25,60 +38,70 @@ class MapViewer:
             self.controller.cleanup()
             
         self.current_node = node_data
-        metadata = node_data.get('metadata', {})
-        geo = node_data.get('geometry_data', {})
+        
+        props = node_data.get('properties', {})
+        geo = props.get('geometry_data', {}) # Kept for legacy or future use
         node_type = node_data.get('type', 'world_map')
         
+        # --- FIX: Ensure Party View Marker Exists ---
+        markers = self.db.get_children(self.current_node['id'], type_filter='poi')
+        view_marker_exists = any(m.get('properties', {}).get('is_view_marker') for m in markers)
+
+        if not view_marker_exists:
+            log(LOG_DEBUG, f"No Party View found for Node {self.current_node['id']}. Creating one.")
+            
+            # Determine center point for the new marker
+            if node_type in ['dungeon_level', 'building_interior', 'tactical_map']:
+                geom_props = props.get('geometry', {})
+                center_x = geom_props.get('width', 30) / 2.0
+                center_y = geom_props.get('height', 30) / 2.0
+            else:
+                center_x = props.get('width', SCREEN_WIDTH) / 2.0
+                center_y = props.get('height', SCREEN_HEIGHT) / 2.0
+                
+            marker_props = {
+                "world_x": center_x,
+                "world_y": center_y,
+                "symbol": "eye",
+                "description": "The party's current position and view.",
+                "is_view_marker": True,
+                "is_active": True,
+                "zoom": 1.5,
+                "radius": 15,
+                "explored_tiles": {},
+                "facing_degrees": 270,
+                "beam_degrees": 360
+            }
+            
+            # This was the missing line:
+            self.db.create_node('poi', 'Party View', self.current_node['id'], properties=marker_props)
+        # --- END FIX ---
+
+        # 1. Initialize Controller
         if node_type in ['dungeon_level', 'building_interior', 'tactical_map', 'compound', 'dungeon_complex']:
             self.controller = TacticalController(self, self.db, node_data, self.theme, self.ai)
         else:
             self.controller = GeoController(self, self.db, node_data, self.theme, self.ai)
 
-        if 'cam_x' in metadata:
-            self.cam_x, self.cam_y = metadata['cam_x'], metadata['cam_y']
-            self.zoom = metadata.get('zoom', 1.0)
-        elif node_type in ['dungeon_level', 'building_interior', 'tactical_map', 'compound', 'dungeon_complex']:
-            self.cam_x = geo.get('width', 30) / 2
-            self.cam_y = geo.get('height', 30) / 2
+        # 2. Camera Setup
+        if 'cam_x' in props:
+            self.cam_x, self.cam_y = props['cam_x'], props['cam_y']
+            self.zoom = props.get('zoom', 1.0)
+        elif node_type in ['dungeon_level', 'building_interior', 'tactical_map']:
+            geom_props = props.get('geometry', {})
+            self.cam_x = geom_props.get('width', 30) / 2
+            self.cam_y = geom_props.get('height', 30) / 2
             self.zoom = 1.0
         else:
-            map_w = metadata.get('width', SCREEN_WIDTH)
-            map_h = metadata.get('height', SCREEN_HEIGHT)
+            map_w = props.get('width', SCREEN_WIDTH)
+            map_h = props.get('height', SCREEN_HEIGHT)
             self.cam_x, self.cam_y = map_w / 2, map_h / 2
             self.zoom = 1.0
             
-        markers = self.db.get_markers(self.current_node['id'])
-        view_marker_exists = any(m['metadata'].get('is_view_marker') for m in markers)
-
-        if not view_marker_exists:
-            print(f"No view marker found for Node {self.current_node['id']}. Creating one.")
-            
-            marker_x = self.cam_x
-            marker_y = self.cam_y
-            
-            view_meta = {
-                "is_view_marker": True,
-                "is_active": True,
-                "zoom": 1.5,
-                "radius": 15,
-                "explored_tiles": {}
-            }
-            
-            self.db.add_marker(
-                self.current_node['id'], 
-                marker_x, 
-                marker_y,
-                'eye',
-                'Party View',
-                'The party\'s current position and view.',
-                view_meta
-            )
-        
-        if node_type in ['dungeon_level', 'building_interior', 'tactical_map', 'compound', 'dungeon_complex']:
-            self.controller = TacticalController(self, self.db, self.current_node, self.theme, self.ai)
-        else:
-            self.controller = GeoController(self, self.db, self.current_node, self.theme, self.ai)
-
+        # Refresh markers in controller after potential creation
+        if self.controller:
+            self.controller.markers = self.db.get_children(self.current_node['id'], type_filter='poi')
+ 
     def handle_zoom(self, direction, mouse_pos):
         if not self.controller: return
         zoom_speed = getattr(self.controller, 'zoom_factor', 1.2)
@@ -91,9 +114,9 @@ class MapViewer:
         updates['cam_x'] = self.cam_x
         updates['cam_y'] = self.cam_y
         updates['zoom'] = self.zoom
-        current_meta = self.current_node.get('metadata', {})
+        current_meta = self.current_node.get('properties', {})
         current_meta.update(updates)
-        self.db.update_node_data(self.current_node['id'], metadata=current_meta)
+        self.db.update_node(self.current_node['id'], properties=current_meta)
 
     def handle_input(self, event):
         if not self.controller: return

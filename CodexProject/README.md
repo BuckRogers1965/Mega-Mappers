@@ -1,5 +1,8 @@
 # The Codex Engine (Alpha)
 
+This is a refactor to use nodes with properties for all the data.  
+The only think left to fix is the ai generation. 
+
 **The Codex Engine** is a procedurally generated Virtual Tabletop (VTT) and Campaign Manager designed for TTRPG Game Masters. 
 
 Unlike traditional VTTs where maps are static images, the Codex Engine uses **fractal generation** and **procedural synthesis**. You can start at the planetary level, zoom into a specific region to generate a local map based on the world terrain, and drill down further into tactical battlemaps for dungeons and buildings.

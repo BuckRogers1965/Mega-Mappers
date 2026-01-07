@@ -91,11 +91,12 @@ class WorldGenerator:
         nid = None
         existing = self.db.get_node_by_coords(campaign_id, None, 0, 0)
         if existing:
-            self.db.update_node_data(existing['id'], geometry={}, metadata=metadata)
+            self.db.update_node(existing['id'], properties=metadata)
             nid = existing['id']
         else:
-            nid = self.db.create_node(campaign_id, "world_map", None, 0, 0, "Fractal World")
-            self.db.update_node_data(nid, geometry={}, metadata=metadata)
+            #nid = self.db.create_node(campaign_id, "world_map", None, 0, 0, "Fractal World")
+            nid = self.db.create_node("world_map", "Fractal World", campaign_id, {"grid_x": 0, "grid_y": 0})
+            self.db.update_node(nid, properties=metadata)
         
         # NO AUTOMATIC ROADS/RIVERS ADDED HERE
         return nid, metadata

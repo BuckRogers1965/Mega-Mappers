@@ -24,7 +24,11 @@ class DungeonGenerator:
         return None
 
     def generate_dungeon_complex(self, parent_node, marker, campaign_id, levels=None):
-        bp_id = marker['metadata'].get('blueprint_id')
+
+        print (f" ** ** ** ** ** marker {marker}")
+
+        print (f" ** ** ** ** ** marker.id {marker['id']}")
+        bp_id = marker.get('blueprint_id')
         
         if not bp_id:
             # Fallback for generic "Skull" markers
@@ -56,12 +60,26 @@ class DungeonGenerator:
 
             level_name = level_config.get('name_override', f"Level {depth}")
             
+            new_props = {
+                "world_x": int(marker['world_x']),
+                "world_y": int(marker['world_y']),
+            }
             # Create Node
+
+            node_id = self.db.create_node(
+                type="dungeon_level",
+                name=level_name,
+                parent_id=marker['id'],
+                properties=new_props
+            )
+
+            '''
             node_id = self.db.create_node(
                 campaign_id, "dungeon_level", levels_parent_id,
                 int(marker['world_x']), int(marker['world_y']), level_name
             )
-            
+            ''' 
+
             if depth == 1: first_level_id = node_id
 
             # Generate Geometry
@@ -69,6 +87,27 @@ class DungeonGenerator:
             grid, rooms = self._generate_layout(gen_config)
             
             # --- METADATA & GEOMETRY STORAGE ---
+
+                        # Prepare properties
+            new_props = {
+                "render_style": level_config.get('theme_override', 'hand_drawn'),
+                "overview": complex_bp.get('description', 'A dark and dangerous place.'),
+                "source_marker_id": marker['id'], # CRITICAL: Links siblings together
+                "depth": depth,
+                "geometry": {
+                    "grid": grid, 
+                    "width": len(grid[0]), 
+                    "height": len(grid),
+                    "rooms": [list(r) for r in rooms]
+                }
+            }
+            
+            # Create Local Map Node
+            self.db.update_node(
+                node_id, properties=new_props
+            )
+
+            '''
             self.db.update_node_data(node_id, 
                 geometry={
                     "grid": grid, 
@@ -83,21 +122,46 @@ class DungeonGenerator:
                     "depth": depth
                 }
             )
+            '''
 
-            # Markers (Stairs/Numbers)
+            # --- Markers (Room Numbers and Navigation) ---
             if rooms:
+                # 1. Room Numbers
                 for i, r in enumerate(rooms):
-                    self.db.add_marker(node_id, r[0] + 0.5, r[1] + 0.5, 'room_number', str(i+1), "An unexplored chamber.")
+                    room_props = {
+                        "world_x": r[0] + 0.5,
+                        "world_y": r[1] + 0.5,
+                        "symbol": "room_number",
+                        "description": "An unexplored chamber."
+                    }
+                    # Room name is the number for display in the tactical view
+                    self.db.create_node(type='poi', name=str(i+1), parent_id=node_id, properties=room_props)
 
+                # 2. Stairs Up (Exit to previous level or Map)
                 up_room = rooms[0]
                 cx, cy = up_room[0] + up_room[2]//2, up_room[1] + up_room[3]//2
-                self.db.add_marker(node_id, cx, cy, "stairs_up", "Stairs Up", "", metadata={"portal_to": previous_level_node_id})
+                up_props = {
+                    "world_x": float(cx),
+                    "world_y": float(cy),
+                    "symbol": "stairs_up",
+                    "portal_to": previous_level_node_id,
+                    "description": "Stirs leading up...",
+                }
+                self.db.create_node(type='poi', name="Stairs Up", parent_id=node_id, properties=up_props)
 
+            # 3. Stairs Down (If more levels exist)
             if depth < len(complex_bp['levels']):
                 down_room = rooms[-1]
                 dx, dy = down_room[0] + down_room[2]//2, down_room[1] + down_room[3]//2
-                self.db.add_marker(node_id, dx, dy, "stairs_down", "Stairs Down", "Leads deeper...", metadata={})
+                down_props = {
+                    "world_x": float(dx),
+                    "world_y": float(dy),
+                    "symbol": "stairs_down",
+                    "description": "Leads deeper...",
+                }
+                self.db.create_node(type='poi', name="Stairs Down", parent_id=node_id, properties=down_props)
 
+            # 4. Link the previous level's "Stairs Down" to this new level
             if depth > 1:
                 self._link_down_stairs(previous_level_node_id, node_id)
 
@@ -105,13 +169,14 @@ class DungeonGenerator:
 
         return first_level_id
 
-    def _link_down_stairs(self, from_node, to_node):
-        markers = self.db.get_markers(from_node)
-        for m in markers:
-            if m['symbol'] == 'stairs_down':
-                meta = m['metadata']
-                meta['portal_to'] = to_node
-                self.db.update_marker(m['id'], metadata=meta)
+    def _link_down_stairs(self, from_node_id, to_node_id):
+        potential_markers = self.db.get_children(from_node_id, type_filter='poi')
+        for m in potential_markers:
+            props = m.get('properties', {})
+            if props.get('symbol') == 'stairs_down':
+                props['description'] = "Leads deeper..."
+                # FIXED: portal_to stored directly in properties
+                self.db.update_node(m['id'], properties={'portal_to': to_node_id})
                 break
 
     def _generate_fallback(self, parent_node, marker, campaign_id):
@@ -120,12 +185,31 @@ class DungeonGenerator:
         for y in range(10, 30):
             for x in range(10, 30): grid[y][x] = 1
         
-        nid = self.db.create_node(campaign_id, "dungeon_level", parent_node['id'], int(marker['world_x']), int(marker['world_y']), "Unknown Lair")
-        self.db.update_node_data(nid, 
-            geometry={"grid": grid, "width": w, "height": h, "rooms": [[10,10,20,20]]},
-            metadata={"render_style": "hand_drawn", "source_marker_id": marker['id']}
-        )
-        self.db.add_marker(nid, 20, 20, "stairs_up", "Exit", "", metadata={"portal_to": parent_node['id']})
+            new_props = {
+                "render_style": "hand_drawn", 
+                "source_marker_id": marker['id'],
+                "world_x": int(marker['world_x']),
+                "world_y": int(marker['world_y']),
+                "geometry": {"grid": grid, 
+                             "width": w, 
+                             "height": h, 
+                             "rooms": [[10,10,20,20]]},
+            }
+            # Create Node
+
+            nid = self.db.create_node(
+                type="dungeon_level",
+                name="A dark dungeon",
+                parent_id=parent_node['id'],
+                properties=new_props
+            )
+
+        #nid = self.db.create_node(campaign_id, "dungeon_level", parent_node['id'], int(marker['world_x']), int(marker['world_y']), "Unknown Lair")
+        #self.db.update_node(nid, 
+        #    geometry={"grid": grid, "width": w, "height": h, "rooms": [[10,10,20,20]]},
+        #    metadata={"render_style": "hand_drawn", "source_marker_id": marker['id']}
+        #)
+        #self.db.add_marker(nid, 20, 20, "stairs_up", "Exit", "", metadata={"portal_to": parent_node['id']})
         return nid
 
     def _generate_layout(self, config):

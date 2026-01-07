@@ -34,158 +34,112 @@
 <script>
     const API_URL = "/api";
     let navStack = [];
-    let currentContainerUid = null;
+    let currentUid = null;
 
     async function init() {
-        // Start at the root level (campaign list)
-        navigateTo(null, "Campaigns");
+        const res = await fetch(`${API_URL}/tree`);
+        const children = await res.json();
+        // Root nodes have no parent (null)
+        renderSidebar(children, null);
     }
 
-    // The single function to handle all navigation
     async function navigateTo(uid, title) {
-        // Push the CURRENT state to history before navigating to the NEW one
-        // BUT: Don't push if current is a tactical map (dungeon_level, building_interior)
-        // This keeps Back pointed at the marker/list level
-        const currentIsTactical = currentContainerUid && 
-            (currentContainerUid.startsWith('dungeon_level:') || 
-             currentContainerUid.startsWith('building_interior:'));
+        if (uid === null) { init(); return; }
         
-        if (uid !== null && !currentIsTactical) {
-            navStack.push({ uid: currentContainerUid, title: document.getElementById('nav-header').innerText });
-        }
-
-        currentContainerUid = uid;
+        currentUid = uid;
         document.getElementById('nav-header').innerText = title;
-        const list = document.getElementById('nav-list');
-        list.innerHTML = '<div>Loading...</div>';
-
-        // Fetch data for the place we are navigating TO
-        const url = uid ? `${API_URL}/tree/${uid}` : `${API_URL}/tree`;
-        const res = await fetch(url);
-        const data = await res.json();
         
-        // The server response tells us what the children are
-        const children = uid ? data.children : data;
-        renderSidebar(children);
+        const res = await fetch(`${API_URL}/tree/${uid}`);
+        const node = await res.json();
         
-        // Auto-select and load the editor for the container's own details
-        if (uid && children.length > 0) {
-            loadEditor(children[0].uid);
-            setActiveItem(children[0].uid);
-        } else {
-            // Clear editor if at root
-            document.getElementById('editor-content').innerHTML = '';
-            document.getElementById('editor-header').innerHTML = '<h1>Select a Campaign</h1>';
-            document.getElementById('save-btn').style.display = 'none';
-        }
+        // Use node.parent_uid from the server instead of a local stack
+        renderSidebar(node.children, node.parent_uid);
+        renderEditor(node);
     }
 
-    function renderSidebar(children) {
+    function renderSidebar(children, parentUid) {
         const list = document.getElementById('nav-list');
         list.innerHTML = '';
 
-        // Back button logic based on the history stack
-        if (navStack.length > 0) {
-            const prev = navStack[navStack.length - 1];
+        // TARGETED FIX: Back button now relies on the server's parent_uid
+        // If currentUid is set, we are in a node and can go back (even to root/null)
+        if (currentUid !== null) {
             const backBtn = document.createElement('div');
             backBtn.className = 'node-item nav-up';
-            backBtn.innerHTML = `<span class="icon">⬅️</span> Back to ${prev.title}`;
-            backBtn.onclick = () => { 
-                const lastState = navStack.pop();
-                navigateTo(lastState.uid, lastState.title); 
-            };
+            backBtn.innerHTML = `<span class="icon">⬅️</span> Back`;
+            backBtn.onclick = () => navigateTo(parentUid, "Back");
             list.appendChild(backBtn);
         }
 
         children.forEach(c => {
             const div = document.createElement('div');
             div.className = 'node-item';
-            div.id = `node-${c.uid}`;
             div.innerHTML = `<span class="icon">${c.icon}</span> ${c.name}`;
-            
-            // Check if we're currently viewing a tactical map
-            const inTacticalMap = currentContainerUid && 
-                (currentContainerUid.startsWith('dungeon_level:') || 
-                 currentContainerUid.startsWith('building_interior:'));
-            
-            // Info nodes always just load the editor
-            const isInfoNode = c.type.endsWith("-info");
-            // Markers and NPCs when inside tactical maps should just load editor
-            const isMarkerOrNpc = c.type === 'marker' || c.type === 'npc';
-            
-            if (isInfoNode || (inTacticalMap && isMarkerOrNpc)) {
-                // Just load editor, don't navigate
-                div.onclick = () => {
-                    loadEditor(c.uid);
-                    setActiveItem(c.uid);
-                };
-            } else {
-                // Everything else navigates
-                div.onclick = () => navigateTo(c.uid, c.name);
-            }
+            div.onclick = () => navigateTo(c.uid, c.name);
             list.appendChild(div);
         });
     }
 
-    async function loadEditor(uid) {
-        const res = await fetch(`${API_URL}/tree/${uid}`);
-        if(!res.ok) return;
-        const data = await res.json();
-
-        document.getElementById('editor-header').innerHTML = `<h1>${data.icon || ''} ${data.name}</h1>`;
+    function renderEditor(node) {
+        document.getElementById('editor-header').innerHTML = `<h1>${node.name}</h1>`;
         const container = document.getElementById('editor-content');
         container.innerHTML = '';
+        
         const form = document.createElement('div');
 
-        data.ui_schema.forEach(field => {
-            const group = document.createElement('div'); group.className = 'form-group';
-            const lbl = document.createElement('label'); lbl.innerText = field.label; group.appendChild(lbl);
+        node.ui_schema.forEach(field => {
+            const group = document.createElement('div'); 
+            group.className = 'form-group';
+            const lbl = document.createElement('label'); 
+            lbl.innerText = field.label; 
+            group.appendChild(lbl);
             
             let input;
-            const val = (data.data && data.data[field.key]) ? data.data[field.key] : "";
+            const val = node.data[field.key] || "";
             
-            if (field.type === 'textarea' || field.type === 'list') {
+            if (field.type === 'textarea') {
                 input = document.createElement('textarea');
-                input.value = (field.type === 'list' && Array.isArray(val)) ? val.join('\n') : val;
+                input.rows = 5;
+                input.value = val;
             } else {
                 input = document.createElement('input');
-                input.type = 'text'; input.value = val;
+                input.type = 'text'; 
+                input.value = val;
             }
+            
             if(field.readonly) input.disabled = true;
-            input.id = `field_${field.key}`; input.dataset.fieldType = field.type;
+            input.id = `field_${field.key}`;
             group.appendChild(input);
             form.appendChild(group);
         });
+        
         container.appendChild(form);
 
         const btn = document.getElementById('save-btn');
         btn.style.display = 'inline-block';
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
-        newBtn.onclick = () => saveData(uid, data.ui_schema, newBtn);
+        btn.onclick = () => saveData(node.uid, node.ui_schema);
     }
 
-    async function saveData(uid, schema, btn) {
+    async function saveData(uid, schema) {
         const payload = {};
         schema.forEach(field => {
             if(field.readonly) return;
             const el = document.getElementById(`field_${field.key}`);
-            if(!el) return;
-            payload[field.key] = (el.dataset.fieldType === 'list') ? el.value.split('\n').filter(s => s.trim() !== "") : el.value;
+            if(el) payload[field.key] = el.value;
         });
 
-        btn.innerText = "Saving..."; btn.disabled = true;
-        await fetch(`${API_URL}/tree/${uid}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ data: payload }) });
+        const btn = document.getElementById('save-btn');
+        btn.innerText = "Saving..."; 
+        btn.disabled = true;
+        
+        await fetch(`${API_URL}/tree/${uid}`, { 
+            method: 'PATCH', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({ data: payload }) 
+        });
+        
         btn.innerText = "Saved!";
         setTimeout(() => { btn.innerText = "Save Changes"; btn.disabled = false; }, 1000);
-    }
-    
-    function setActiveItem(uid) {
-        document.querySelectorAll('.node-item').forEach(el => el.classList.remove('active'));
-        if (uid) {
-            const el = document.getElementById(`node-${uid}`);
-            if(el) el.classList.add('active');
-        }
     }
 
     init();

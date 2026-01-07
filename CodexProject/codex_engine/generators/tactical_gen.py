@@ -11,7 +11,7 @@ class TacticalGenerator:
         """
         Dispatches generation to the correct module based on marker metadata.
         """
-        bp_id = marker['metadata'].get('blueprint_id')
+        bp_id = marker.get('blueprint_id')
         
         # 1. Blueprint Logic
         if bp_id:

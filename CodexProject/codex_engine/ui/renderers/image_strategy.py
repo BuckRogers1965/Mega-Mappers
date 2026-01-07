@@ -11,8 +11,11 @@ class ImageMapStrategy:
     def __init__(self, metadata, theme_manager):
         self.theme = theme_manager
         self.metadata = metadata
+
+        print (f" *** {self.metadata}")
         
         map_path = MAPS_DIR / metadata['file_path']
+        print (f" *** {map_path}")
         img = Image.open(map_path)
         self.heightmap = np.array(img, dtype=np.float32) / 65535.0
         
@@ -27,6 +30,8 @@ class ImageMapStrategy:
         self.light_intensity = 1.5 
         
     def _get_visible_region(self, cam_x, cam_y, zoom, screen_width, screen_height):
+
+        #print (f" *** _get_visible_region {cam_x} {cam_y} {zoom} {screen_width} {screen_height}")
         visible_map_width = screen_width / zoom
         visible_map_height = screen_height / zoom
         
@@ -104,6 +109,8 @@ class ImageMapStrategy:
     
     def draw(self, screen, cam_x, cam_y, zoom, screen_width, screen_height, sea_level_meters=0.0, vectors=None, active_vector=None, selected_point_idx=None, contour_interval=0):
         sea_level_norm = (sea_level_meters - self.real_min) / (self.real_max - self.real_min)
+
+        #print (f" **** **** **** draw {cam_x} {cam_y} {zoom} {screen_width} {screen_height} ")
         
         x_start, x_end, y_start, y_end = self._get_visible_region(cam_x, cam_y, zoom, screen_width, screen_height)
         
@@ -132,14 +139,22 @@ class ImageMapStrategy:
         if active_vector: all_vectors.append(active_vector)
 
         for vec in all_vectors:
-            points = vec['points']
+            # Handle Node structure vs Flat Dict
+            props = vec.get('properties', vec)
+            
+            points = props.get('points', [])
             if not points: continue
             
-            color = COLOR_RIVER if vec['type'] == 'river' else COLOR_ROAD
+            v_type = props.get('type', 'road')
+            width_val = props.get('width', 4)
+            
+            color = COLOR_RIVER if v_type == 'river' else COLOR_ROAD
+            
+            # Highlight active vector
             if active_vector and vec is active_vector:
                 color = (255, 255, 0)
 
-            width = max(2, int(vec['width'] * zoom))
+            width = max(2, int(width_val * zoom))
             
             screen_pts = []
             for px, py in points:
@@ -156,7 +171,6 @@ class ImageMapStrategy:
                     pt_color = (255, 0, 0) if idx == selected_point_idx else (255, 255, 255)
                     pygame.draw.circle(screen, pt_color, (sx, sy), 5)
                     pygame.draw.circle(screen, (0,0,0), (sx, sy), 5, 1)
-
 
     def set_light_direction(self, azimuth, altitude):
         self.light_azimuth = azimuth; self.light_altitude = altitude

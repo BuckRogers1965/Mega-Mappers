@@ -58,13 +58,16 @@ class LocalGenerator:
     def generate_local_map(self, parent_node, marker, campaign_id):
         print(f"--- FRACTAL ZOOM: Generating {marker['title']} ---")
         
+        # Access properties instead of metadata
+        parent_props = parent_node.get('properties', {})
+        
         # 1. LOAD PARENT
-        parent_path = MAPS_DIR / parent_node['metadata']['file_path']
+        parent_path = MAPS_DIR / parent_props['file_path']
         parent_img = Image.open(parent_path)
         parent_data = np.array(parent_img) / 65535.0
         
         chunk_size_world_pixels = 30 
-        cx, cy = int(marker['world_x']), int(marker['world_y'])
+        cx, cy = int(marker.get('world_x', 0)), int(marker.get('world_y', 0))
         
         x1 = max(0, cx - chunk_size_world_pixels//2)
         y1 = max(0, cy - chunk_size_world_pixels//2)
@@ -74,16 +77,13 @@ class LocalGenerator:
         chunk = parent_data[y1:y2, x1:x2]
         
         # 2. CALCULATE ACTUAL HEIGHT RANGE OF CHUNK
-        # Get parent's real height range to map the chunk values
-        parent_real_min = parent_node['metadata'].get('real_min', -11000.0)
-        parent_real_max = parent_node['metadata'].get('real_max', 9000.0)
+        parent_real_min = parent_props.get('real_min', -11000.0)
+        parent_real_max = parent_props.get('real_max', 9000.0)
         parent_range = parent_real_max - parent_real_min
         
-        # Calculate actual min/max heights in the extracted chunk
         chunk_min = chunk.min()
         chunk_max = chunk.max()
         
-        # Map chunk's normalized values to real-world heights
         chunk_real_min = parent_real_min + (chunk_min * parent_range)
         chunk_real_max = parent_real_min + (chunk_max * parent_range)
         chunk_real_range = chunk_real_max - chunk_real_min
@@ -96,27 +96,28 @@ class LocalGenerator:
         upscaled = chunk_pil.resize((target_size, target_size), resample=Image.BICUBIC)
         terrain = np.array(upscaled)
         
-        # 4. DETAIL NOISE (add variation within the local range)
+        # 4. DETAIL NOISE
         for y in range(target_size):
             for x in range(target_size):
                 n = self.noise.get_octave_noise(x/100.0, y/100.0, octaves=4)
-                # Scale noise to be proportional to local height range
-                noise_amplitude = 0.02  # 2% of local range
+                noise_amplitude = 0.02
                 terrain[y, x] += n * noise_amplitude
         
         # 5. INHERIT WORLD VECTORS
-        parent_vectors = self.db.get_vectors(parent_node['id'])
+        # Fetch generic vector nodes and flatten properties
+        vector_nodes = self.db.get_children(parent_node['id'], type_filter='vector')
+        parent_vectors = [v.get('properties', {}) for v in vector_nodes]
         
         width_px = max(1, x2 - x1)
         height_px = max(1, y2 - y1)
         scale_x = target_size / width_px
         scale_y = target_size / height_px
 
-        sea_level = parent_node['metadata'].get('sea_level', 0)
+        sea_level = parent_props.get('sea_level', 0)
         local_vectors = []
 
         for vec in parent_vectors:
-            points = vec['points']
+            points = vec.get('points', [])
             local_points = []
             intersects = False
             
@@ -136,18 +137,19 @@ class LocalGenerator:
 
             if intersects and len(local_points) > 1:
                 zoom_factor = scale_x
-                base_width = vec['width'] 
+                base_width = vec.get('width', 4)
+                v_type = vec.get('type', 'road')
                 
-                if vec['type'] == 'river':
+                if v_type == 'river':
                     imprint_width = max(60, base_width * zoom_factor * 0.5)
                 else:
                     imprint_width = max(30, base_width * zoom_factor * 0.3)
 
-                self._imprint_vector(terrain, local_points, imprint_width, vec['type'], sea_level, 
+                self._imprint_vector(terrain, local_points, imprint_width, v_type, sea_level, 
                                    parent_real_min, parent_range)
                 
                 local_vectors.append({
-                    "type": vec['type'],
+                    "type": v_type,
                     "points": local_points,
                     "width": int(imprint_width)
                 })
@@ -155,7 +157,6 @@ class LocalGenerator:
         # 6. SAVE
         terrain = np.clip(terrain, 0, 1)
         
-        # Calculate final height range after all modifications
         terrain_min = terrain.min()
         terrain_max = terrain.max()
         final_real_min = parent_real_min + (terrain_min * parent_range)
@@ -167,37 +168,63 @@ class LocalGenerator:
         uint16_data = (terrain * 65535).astype(np.uint16)
         Image.fromarray(uint16_data, mode='I;16').save(MAPS_DIR / filename)
         
-        # 7. UPDATE DB WITH ACTUAL LOCAL HEIGHT RANGE
-        meta = {
+        # 7. UPDATE DB
+        map_name = f"{marker['title']} (Local)"
+        
+        # Prepare properties
+        new_props = {
             "file_path": filename,
             "width": target_size,
             "height": target_size,
-            # USE ACTUAL LOCAL HEIGHT RANGE, NOT GLOBAL
             "real_min": float(final_real_min),
             "real_max": float(final_real_max),
-            "sea_level": sea_level
+            "sea_level": sea_level,
+            "world_x": cx,
+            "world_y": cy
         }
         
-        map_name = f"{marker['title']} (Local)"
-        new_node_id = self.db.create_node(campaign_id, "local_map", parent_node['id'], cx, cy, map_name)
-        self.db.update_node_data(new_node_id, geometry={}, metadata=meta)
+        # Create Local Map Node
+        new_node_id = self.db.create_node(
+            type="local_map",
+            name=map_name,
+            parent_id=parent_node['id'],
+            properties=new_props
+        )
         
-        # 8. SAVE VECTORS
+        # 8. SAVE VECTORS (As child nodes)
         for lv in local_vectors:
-            self.db.save_vector(new_node_id, lv['type'], lv['points'], lv['width'])
+            self.db.create_node(
+                type="vector",
+                name=f"Local {lv['type']}",
+                parent_id=new_node_id,
+                properties=lv
+            )
 
         # 9. POPULATE
-        if "Village" in marker['title'] or "Town" in marker['title'] or "City" in marker['title'] or "🏰" in marker['symbol']:
+        m_type = marker.get('marker_type', '').lower()
+        m_symbol = marker.get('symbol', '').lower()
+        m_title = marker.get('title', '')
+
+        print(f"[DEBUG POPULATE] Analyzing Marker: '{m_title}'")
+        print(f"  > marker_type: '{m_type}'")
+        print(f"  > symbol:      '{m_symbol}'")
+
+        if m_type == 'village':
+            print("  [CLASSIFICATION] MATCH: Village. Triggering _populate_village.")
             self._populate_village(new_node_id, target_size, local_vectors)
-        elif "Dungeon" in marker['title'] or "Cave" in marker['title'] or "💀" in marker['symbol']:
+        
+        elif m_type == 'lair':
+            print("  [CLASSIFICATION] MATCH: Lair. Triggering _populate_dungeon_entrance.")
             self._populate_dungeon_entrance(new_node_id, target_size)
+            
+        else:
+            # Fallback for old markers or unexpected types
+            print(f"  [CLASSIFICATION] NO MATCH for type '{m_type}'. Skipping population.")
         
         return new_node_id
 
     def _imprint_vector(self, terrain, points, width, vtype, sea_level, parent_real_min, parent_range):
         h, w = terrain.shape
-        
-        # Convert sea_level to normalized value in parent's coordinate system
         sea_level_normalized = (sea_level - parent_real_min) / parent_range
         
         for i in range(len(points)-1):
@@ -212,7 +239,6 @@ class LocalGenerator:
                 cx = int(x0 + (x1-x0)*t)
                 cy = int(y0 + (y1-y0)*t)
                 
-                # CLAMP
                 cx = max(0, min(w - 1, cx))
                 cy = max(0, min(h - 1, cy))
                 
@@ -224,10 +250,8 @@ class LocalGenerator:
                         if 0 <= nx < w and 0 <= ny < h:
                             if dx*dx + dy*dy <= r*r:
                                 if vtype == 'river':
-                                    # Calculate depth in normalized space
                                     dist_from_center = math.sqrt(dx*dx + dy*dy) / r
                                     depth_normalized = 0.02 * (1.0 - dist_from_center)
-                                    # Force below sea level in normalized space
                                     target_h = sea_level_normalized - 0.002 - depth_normalized
                                     terrain[ny, nx] = min(terrain[ny, nx], target_h)
                                     
@@ -303,7 +327,17 @@ class LocalGenerator:
                 if not collision:
                     b_data = BUILDING_TYPES.get(b_type, BUILDING_TYPES["house"])
                     name = generate_building_name(b_type)
-                    self.db.add_marker(node_id, px, py, b_data['icon'], name, f"A {b_type}.")
+                    
+                    # Create Marker Node
+                    props = {
+                        "world_x": px,
+                        "world_y": py,
+                        "symbol": b_data['icon'],
+                        "description": f"A {b_type}.",
+                        "marker_type": "building"
+                    }
+                    self.db.create_node("poi", name, node_id, properties=props)
+                    
                     placed_buildings.append((px, py))
                     placed = True
                 
@@ -312,8 +346,24 @@ class LocalGenerator:
     def _populate_dungeon_entrance(self, node_id, size):
         print("Populating Dungeon...")
         center = size // 2
-        self.db.add_marker(node_id, center, center, "💀", "The Entrance", "Beware")
+        
+        # Entrance Marker
+        self.db.create_node("poi", "The Entrance", node_id, properties={
+            "world_x": center,
+            "world_y": center,
+            "symbol": "💀",
+            "description": "Beware",
+            "metadata": {}
+        })
+        
+        # Campfires
         for _ in range(3):
             ox = random.randint(-100, 100)
             oy = random.randint(-100, 100)
-            self.db.add_marker(node_id, center+ox, center+oy, "🔥", "Campfire", "Signs of life.")
+            self.db.create_node("poi", "Campfire", node_id, properties={
+                "world_x": center + ox,
+                "world_y": center + oy,
+                "symbol": "🔥",
+                "description": "Signs of life.",
+                "metadata": {}
+            })

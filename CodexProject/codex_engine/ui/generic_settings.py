@@ -126,9 +126,10 @@ class GenericSettingsEditor:
         # Temp storage for "New Service" inputs
         self.new_svc_name = InputBox(0, 0, 200, 30, self.font, text="")
         #self.new_svc_name = InputBox(0,0,200,30, self.font, "New Service Name")
-        self.new_svc_driver = Dropdown(0,0,180,30, self.font, [
+        self.new_svc_driver = Dropdown(0,0,180,90, self.font, [
             {'id': 'openai_compatible', 'name': 'OpenAI / Groq / Ollama'},
-            {'id': 'gemini', 'name': 'Google Gemini'}
+            {'id': 'gemini', 'name': 'Google Gemini'},
+            {'test': 'other', 'name': ''}
         ])
 
         template_opts = [{'id': k, 'name': v['name']} for k, v in OPENAI_TEMPLATES.items()]
@@ -294,45 +295,10 @@ class GenericSettingsEditor:
         else:
             print("[UI] Add Failed: Name cannot be empty.")
 
-    def _add_service_action_old(self):
-        name = self.new_svc_name.text
-        drv = self.new_svc_driver.get_selected_id()
-        
-        # --- DEBUG START ---
-        print(f"[DEBUG UI] Add Action Triggered.")
-        print(f"  > Name Input: '{name}'")
-        print(f"  > Driver Selected: '{drv}'")
-        # --- DEBUG END ---
-
-        # Add condition to ensure name isn't default
-        if name and drv and name.strip() != "" and name != "New Service Name":
-            print(f"[DEBUG UI] Validation passed. Calling AI Manager...")
-            service_id = self.ai.add_service(name, drv)
-            print(f"[DEBUG UI] AI Manager returned ID: {service_id}")
-
-
-            # After adding, check if the key for this new service is blank
-            key_var_config_key = f"service_{service_id}_key_var"
-            current_key_var = self.config.get(key_var_config_key)
-            
-            # If it's blank and the driver is gemini, set the default
-            if not current_key_var and drv == 'gemini':
-                self.config.set(key_var_config_key, "GEMINI_API_KEY", "global")
-
-            self.new_svc_name.text = "" # Clear for next entry
-
-            self._rebuild_ui()
-        else:
-            print("[DEBUG UI] Validation FAILED. Name must be set and not default.")
-
     def _del_service_action(self, sid):
         print(f"[DEBUG] DELETE called for service ID: {sid}")
         self.ai.delete_service(sid)
         print(f"[DEBUG] DELETE completed, rebuilding UI...")
-        self._rebuild_ui()
-
-    def _del_service_action_old(self, sid):
-        self.ai.delete_service(sid)
         self._rebuild_ui()
 
     def _fetch_models_action(self, sid):
@@ -364,7 +330,6 @@ class GenericSettingsEditor:
         """Called when the 'Add New Service' driver dropdown changes."""
         driver = self.new_svc_driver.get_selected_id()
  
-
     def run(self):
         clock = pygame.time.Clock()
         while self.running:
@@ -462,87 +427,6 @@ class GenericSettingsEditor:
                 
                 for w in self.widgets: 
                     w.draw(self.screen)
-            
-            self.btn_save.draw(self.screen)
-            
-            pygame.display.flip()
-            clock.tick(30)
-
-    def run_old(self):
-        clock = pygame.time.Clock()
-        while self.running:
-            events = pygame.event.get()
-            for e in events:
-                if e.type == pygame.QUIT: self.running = False
-                
-                # Handle Scroll Panel
-                if self.scroll_panel and self.scroll_panel.handle_event(e):
-                    continue # Consumed by scroll
-                
-                # Handle Widgets inside Scroll Panel
-                    if self.scroll_panel:
-                        self.scroll_panel.draw_background()
-                        surf = self.scroll_panel.surface
-                        
-                        # Draw all stored labels
-                        for label_data in self.labels:
-                            if label_data[0] == "BOX":
-                                # Draw box background
-                                _, (x, y, w, h), color = label_data
-                                pygame.draw.rect(surf, color, (x, y, w, h), border_radius=5)
-                                pygame.draw.rect(surf, (60, 60, 70), (x, y, w, h), 1, border_radius=5)
-                            else:
-                                # Draw text label
-                                text, pos, color = label_data
-                                lbl = self.font.render(text, True, color)
-                                surf.blit(lbl, pos)
-                        
-                        # Draw widgets
-                        for w in self.widgets:
-                            if w not in [self.btn_save]:
-                                w.draw(surf)
-                        
-                        self.scroll_panel.draw_to_screen(self.screen)
-                    else:
-                        # Draw labels for local mode
-                        for label_data in self.labels:
-                            text, pos, color = label_data
-                            lbl = self.font.render(text, True, color)
-                            self.screen.blit(lbl, pos)
-                        
-                        for w in self.widgets:
-                            w.draw(self.screen)
-                else:
-                    # Normal handling (Local Mode)
-                    for w in self.widgets: w.handle_event(e)
-
-            # Draw
-            self.screen.fill((0,0,0))
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0,0,0,180))
-            self.screen.blit(overlay, (0,0))
-            
-            # Main Box
-            pygame.draw.rect(self.screen, (40, 40, 50), self.rect, border_radius=10)
-            pygame.draw.rect(self.screen, (100, 100, 120), self.rect, 2, border_radius=10)
-            
-            ts = self.title_font.render("AI Settings Manager", True, (255,255,255))
-            self.screen.blit(ts, (self.rect.x + 20, self.rect.y + 20))
-
-            if self.scroll_panel:
-                # 1. Clear Scroll Surface
-                self.scroll_panel.draw_background()
-                
-                # 2. Draw Widgets onto Scroll Surface
-                surf = self.scroll_panel.surface
-                for w in self.widgets:
-                    if w not in [self.btn_save]: # Exclude external buttons
-                         w.draw(surf)
-                
-                # 3. Blit Scroll Viewport to Screen
-                self.scroll_panel.draw_to_screen(self.screen)
-            else:
-                for w in self.widgets: w.draw(self.screen)
             
             self.btn_save.draw(self.screen)
             

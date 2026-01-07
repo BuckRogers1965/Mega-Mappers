@@ -13,26 +13,26 @@ class ContentManager:
         """Helper to wrap all lines to specified width."""
         wrapped = []
         for line in lines:
-            # Keep headers and separators as-is
             if line.startswith("---") or line.startswith("CAMPAIGN") or line.startswith("LOCATION") or line.startswith("MAP") or line.strip() == "":
                 wrapped.append(line)
             else:
-                # Wrap regular text
                 wrapped.extend(textwrap.wrap(line, width=width))
         return wrapped
 
 class WorldContent(ContentManager):
     def get_info_text(self):
-        # 1. Fetch Campaign Data
-        cid = self.node.get('campaign_id')
-        campaign = self.db.get_campaign(cid)
+        # 1. Fetch Campaign Node using generic get_node
+        cid = self.node.get('parent_id') 
+        campaign = self.db.get_node(cid) if cid else {}
         
-        meta = self.node.get('metadata', {})
+        # 2. Access properties (was flattened, now strictly in properties dict)
+        meta = self.node.get('properties', {})
         
         lines = []
         if campaign:
+            camp_props = campaign.get('properties', {})
             lines.append(f"CAMPAIGN: {campaign.get('name', 'Unknown')}")
-            lines.append(f"Theme: {campaign.get('theme_id', '').title()}")
+            lines.append(f"Theme: {camp_props.get('theme', '').title()}")
             lines.append(f"Created: {campaign.get('created_at', '')[:10]}")
             lines.append("")
             
@@ -47,38 +47,35 @@ class WorldContent(ContentManager):
 
 class LocalContent(ContentManager):
     def get_info_text(self):
-        meta = self.node.get('metadata', {})
+        meta = self.node.get('properties', {})
         lines = []
         
-        # Header
         lines.append(f"LOCATION: {self.node.get('name')}")
         lines.append("")
         
-        # Overview
         overview = meta.get('overview', "No overview available.")
         lines.append("--- OVERVIEW ---")
         wrapped_overview = textwrap.wrap(overview, width=30)
         lines.extend(wrapped_overview)
         lines.append("")
         
-        # Fetch Real Data from DB
-        npcs = self.db.get_npcs_for_node(self.node['id'])
+        # --- FIX: Use generic get_children instead of get_npcs_for_node ---
+        npcs = self.db.get_children(self.node['id'], type_filter='npc')
         
         if npcs:
             lines.append("--- INHABITANTS ---")
             for npc in npcs:
+                n_props = npc.get('properties', {})
                 name = npc.get('name', 'Unknown')
-                role = npc.get('role', 'Unknown')
+                role = n_props.get('role', 'Unknown')
                 lines.append(f"• {name}")
                 lines.append(f"  ({role})")
             lines.append("")
 
-        # Rumors (Metadata)
         rumors = meta.get('rumors', [])
         if rumors:
             lines.append("--- RUMORS & HOOKS ---")
             for r in rumors:
-                # Wrap each rumor
                 wrapped_rumor = textwrap.wrap("* " + r, width=30, subsequent_indent="  ")
                 lines.extend(wrapped_rumor)
                 lines.append("")
@@ -87,29 +84,30 @@ class LocalContent(ContentManager):
 
 class TacticalContent(ContentManager):
     def get_info_text(self):
-        meta = self.node.get('metadata', {})
-        geo = self.node.get('geometry_data', {})
+        # --- FIX: Read from properties ---
+        props = self.node.get('properties', {})
+        geo = props.get('geometry_data', {})
         
         lines = []
         lines.append(f"SITE: {self.node.get('name')}")
         lines.append(f"Type: {self.node.get('type').replace('_', ' ').title()}")
-        lines.append(f"Size: {geo.get('width')}x{geo.get('height')} Tiles")
+        lines.append(f"Size: {geo.get('width', 0)}x{geo.get('height', 0)} Tiles")
         lines.append("")
         
-        overview = meta.get('overview', "")
+        overview = props.get('overview', "")
         if overview:
             lines.append("--- OVERVIEW ---")
             lines.extend(textwrap.wrap(overview, width=35))
             lines.append("")
             
-        encounters = meta.get('encounters', [])
+        encounters = props.get('encounters', [])
         if encounters:
             lines.append("--- ENCOUNTERS ---")
             for item in encounters:
                 lines.append(f"• {item}")
             lines.append("")
 
-        loot = meta.get('loot', [])
+        loot = props.get('loot', [])
         if loot:
             lines.append("--- LOOT ---")
             for item in loot:

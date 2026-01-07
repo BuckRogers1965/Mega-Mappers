@@ -1,0 +1,57 @@
+{
+    "bootstrap": {
+        "database": {
+            "path": "data/codex.db"
+        },
+        "type": "app_root",
+        "name": "Codex System Root",
+        "properties": {},
+        "children": [
+            {
+                "type": "settings",
+                "name": "System Settings",
+                "children": [
+                    {
+                        "type": "server_config",
+                        "name": "Rest Server",
+                        "properties": { "port": 8000, "host": "0.0.0.0" }
+                    },
+                    {
+                        "type": "display_config",
+                        "name": "Client Window",
+                        "properties": { "width": 1400, "height": 840, "fps": 60 }
+                    },
+                    {
+                        "type": "ai_registry",
+                        "name": "AI Providers",
+                        "children": [
+                            {
+                                "type": "ai_provider",
+                                "name": "Google Gemini",
+                                "properties": {
+                                    "api_key": "GEMINI_API_KEY",
+                                    "model": "gemini-flash-latest",
+                                    "driver": "gemini"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "type": "player_view_config",
+                        "name": "Player View Settings",
+                        "properties": { 
+                            "image": "data/player_standby.jpg", 
+                            "qr_size": 100, 
+                            "margin": 20 
+                        }
+                    }
+
+                ]
+            },
+            {
+                "type": "campaign_registry",
+                "name": "Campaign Chronicles"
+            }
+        ]
+    }
+}

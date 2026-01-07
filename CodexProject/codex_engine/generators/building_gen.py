@@ -9,7 +9,7 @@ class BuildingGenerator:
         self.bp_path = DATA_DIR / "blueprints"
 
     def generate(self, parent_node, marker, campaign_id):
-        bp_id = marker['metadata'].get('blueprint_id')
+        bp_id = marker.get('blueprint_id')
         blueprint = self._load_blueprint(bp_id)
         if not blueprint: return None
 
@@ -71,45 +71,66 @@ class BuildingGenerator:
         prev_node_id = None
 
         # Generate Floors
+
         for floor in bp['floors']:
             name = f"{complex_name} - {bp['name']} ({floor['name']})"
-            
+
+            '''            
             node_id = self.db.create_node(
                 campaign_id, "building_interior", parent_node['id'],
                 int(marker['world_x']), int(marker['world_y']), name
             )
-            
+            '''
+
+                        
             grid = [[1 for _ in range(map_w)] for _ in range(map_h)]
             footprints = [{"x": off_x, "y": off_y, "w": w, "h": h, "color": "blue"}]
+
+            # Prepare properties
+            new_props = {
+                "width": w,
+                "height": h,
+                "off_x": off_x,
+                "off_y": off_y,
+                "world_x": int(marker['world_x']),
+                "world_y": int(marker['world_y']),
+                "geometry": {"grid": grid, "width": map_w, "height": map_h, "footprints": footprints},
+                "render_style": "blueprint",
+                "source_marker_id": marker['id'],
+                "overview": f"Floor: {floor['name']} of {bp['name']}"
+            }
             
-            self.db.update_node_data(node_id, 
-                geometry={"grid": grid, "width": map_w, "height": map_h, "footprints": footprints},
-                metadata={
-                    "render_style": "blueprint",
-                    "source_marker_id": marker['id'],
-                    "overview": f"Floor: {floor['name']} of {bp['name']}"
-                }
+            # Create Local Map Node
+            node_id = self.db.create_node(
+                type="building_interior",
+                name=name,
+                #parent_id=parent_node['id'],
+                parent_id=marker['id'], 
+                properties=new_props
             )
             
             if not first_node_id: first_node_id = node_id
 
             # Simple linkage for single structure verticality (Up/Down)
-            if prev_node_id:
+            #if prev_node_id:
                 # Add stairs in center
-                cx, cy = map_w//2, map_h//2
-                self.db.add_marker(prev_node_id, cx, cy, "stairs_down", "Stairs Down", "", metadata={"portal_to": node_id})
-                self.db.add_marker(node_id, cx, cy, "stairs_up", "Stairs Up", "", metadata={"portal_to": prev_node_id})
-            else:
+                #cx, cy = map_w//2, map_h//2
+                #self.db.add_marker(prev_node_id, cx, cy, "stairs_down", "Stairs Down", "", properties={"portal_to": node_id})
+                #self.db.add_marker(node_id, cx, cy, "stairs_up", "Stairs Up", "", properties={"portal_to": prev_node_id})
+            #else:
                  # Ground floor exit to World
-                 self.db.add_marker(node_id, 2, 2, "door_out", "Exit", "", metadata={"portal_to": parent_node['id']})
+                 #self.db.add_marker(node_id, 2, 2, "door_out", "Exit", "", properties={"portal_to": parent_node['id']})
 
             prev_node_id = node_id
 
         return first_node_id
 
 def get_available_blueprints():
+    #print(f"**** get_available_blueprints   DATA_DIR={DATA_DIR}")
     options = []
     base = DATA_DIR / "blueprints"
+
+    #print(f"**** get_available_blueprints   base={base}")
     for cat in ["complexes", "definitions"]:
         p = base / "structures" / cat
         if p.exists():
