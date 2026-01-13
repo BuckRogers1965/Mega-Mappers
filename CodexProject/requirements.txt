@@ -7,7 +7,7 @@ Pillow>=10.0.0
 scipy>=1.10.0
 
 # AI Content Generation (Gemini)
-google-generativeai>=0.3.0
+google-genai
 
 # web server
 fastapi>=0.100.0

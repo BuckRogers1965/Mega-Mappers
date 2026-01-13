@@ -1,50 +1,91 @@
 import os
 import json
-import google.generativeai as genai
+import google.genai as genai
 from typing import Dict, Any, List
 from .base import AIProvider
 
 class GeminiProvider(AIProvider):
     def __init__(self):
         self.api_key = None
-        self.model = None
+        self.client = None
+        self.model_name = None
 
     def configure(self, api_key: str, base_url: str = None):
         self.api_key = api_key
+        # The new library uses a Client instance rather than global configuration
         if self.api_key and self.api_key != "missing":
-            genai.configure(api_key=self.api_key)
+            # Initialize the client. 
+            # Note: base_url is accepted but usually not needed for standard Google endpoints,
+            # but kept for signature compatibility.
+            self.client = genai.Client(api_key=self.api_key)
 
     def list_models(self) -> List[str]:
-        if not self.api_key: return ["Error: Key Missing"]
+        if not self.client:
+            return ["Error: Client not initialized (Missing API Key)"]
         try:
-            # Filter for models that support content generation
-            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            # Clean up names (remove 'models/')
-            return [m.replace("models/", "") for m in models]
+            # New SDK: Use client.models.list()
+            models_response = self.client.models.list()
+            
+            model_names = []
+            # Iterate through the response
+            for m in models_response:
+                # Filter for non-tuning/embedding models if necessary, 
+                # though filtering by 'supported_generation_methods' might be deprecated 
+                # or handled differently in the new proto definitions.
+                # We return all model names here for safety.
+                if m.name.startswith("models/"):
+                    model_names.append(m.name.replace("models/", ""))
+            
+            return model_names
         except Exception as e:
             return [f"Error: {str(e)}"]
 
-    def _get_model(self, model_name):
-        return genai.GenerativeModel(model_name or "gemini-1.5-flash")
+    def _get_model_instance(self, model_name: str):
+        # In the new SDK, we don't explicitly instantiate a GenerativeModel object 
+        # to store. Instead, we pass the model name to the client's methods.
+        # This method is kept if other parts of the code expect it, 
+        # but it effectively just validates the name.
+        return model_name or "gemini-1.5-flash"
 
     def generate_text(self, model: str, prompt: str, context: str = "") -> str:
-        if not self.api_key: return "AI Unavailable: Key missing."
+        if not self.client:
+            return "AI Unavailable: Client not initialized (Missing API Key)."
         
+        # Use the specific model provided, or default
+        target_model = self._get_model_instance(model)
         full_prompt = f"Context: {context}\n\nTask: {prompt}"
+        
         try:
-            response = self._get_model(model).generate_content(full_prompt)
+            # New SDK: Call generate_content via the client
+            response = self.client.models.generate_content(
+                model=target_model,
+                contents=full_prompt
+            )
             return response.text
         except Exception as e:
             return f"AI Error: {str(e)}"
 
     def generate_json(self, model: str, prompt: str, schema_hint: str = "") -> Dict[str, Any]:
-        if not self.api_key: return {}
+        if not self.client:
+            return {}
 
+        target_model = self._get_model_instance(model)
+        
+        # Constructing the prompt with the system instruction
+        # Note: The new SDK has specific support for system instructions via Config,
+        # but we append it to the prompt here to maintain strict backward compatibility 
+        # with your existing prompt engineering logic.
         sys_instruction = "You are a data API. Output ONLY valid JSON. No markdown formatting."
         full_prompt = f"{sys_instruction}\nSchema expected: {schema_hint}\nRequest: {prompt}"
         
         try:
-            response = self._get_model(model).generate_content(full_prompt)
+            # New SDK: Call generate_content via the client
+            response = self.client.models.generate_content(
+                model=target_model,
+                contents=full_prompt
+            )
+            
+            # Clean up markdown code blocks if the model still adds them
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(clean_text)
         except Exception as e:

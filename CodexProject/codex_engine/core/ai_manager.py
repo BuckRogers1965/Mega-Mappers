@@ -1,8 +1,11 @@
 import os
 import json
 import requests
-import google.generativeai as genai
 from typing import Dict, Any, List
+
+# Import the providers. 
+# We remove 'import google.generativeai' completely from this file.
+from .ai.gemini import GeminiProvider
 
 # VERBOSITY LEVELS
 LOG_NONE  = 0
@@ -43,14 +46,16 @@ class AIManager:
 
         try:
             if driver == 'gemini':
-                self._log(LOG_DEBUG, "Driver: Gemini. Configuring and listing models...")
-                genai.configure(api_key=key if key else "")
-                models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                self._log(LOG_DEBUG, "Driver: Gemini. Delegating to GeminiProvider...")
+                provider = GeminiProvider()
+                provider.configure(api_key=key if key else "", base_url=url)
+                models = provider.list_models()
                 self._log(LOG_DEBUG, f"Success: Found {len(models)} Gemini models.")
                 self._log(LOG_INFO, "EXIT: get_available_models_for_service")
                 return models
             
             elif driver == 'openai_compatible':
+                # Note: Ideally this should also be moved to an OpenAIProvider class
                 target_url = url.rstrip('/') + "/models" if url else "http://localhost:11434/v1/models"
                 self._log(LOG_DEBUG, f"Driver: OpenAI Compatible. Hitting: {target_url}")
                 headers = {"Authorization": f"Bearer {key if key else ''}"}
@@ -77,14 +82,20 @@ class AIManager:
 
         try:
             if driver == 'gemini':
-                genai.configure(api_key=key if key else "")
-                m = genai.GenerativeModel(model or "gemini-1.5-flash")
-                self._log(LOG_DEBUG, f"Sending Gemini request (Model: {model})")
-                response = m.generate_content(f"{context}\n\n{prompt}")
+                self._log(LOG_DEBUG, "Driver: Gemini. Delegating to GeminiProvider...")
+                provider = GeminiProvider()
+                provider.configure(api_key=key if key else "", base_url=url)
+                
+                # Pass the resolved model name, defaulting if necessary
+                model_name = model or "gemini-1.5-flash"
+                self._log(LOG_DEBUG, f"Sending request via provider (Model: {model_name})")
+                
+                result = provider.generate_text(model=model_name, prompt=prompt, context=context)
                 self._log(LOG_DEBUG, "Response received successfully.")
-                return response.text
+                return result
             
             elif driver == 'openai_compatible':
+                # Note: Ideally this should also be moved to an OpenAIProvider class
                 target_url = url.rstrip('/') + "/chat/completions" if url else "http://localhost:11434/v1/chat/completions"
                 self._log(LOG_DEBUG, f"Sending OpenAI request to {target_url}")
                 headers = {"Authorization": f"Bearer {key if key else ''}", "Content-Type": "application/json"}
@@ -108,19 +119,27 @@ class AIManager:
         node = self.db.get_node(provider_node_id)
         driver = node['properties'].get('driver')
 
+        # Note: System instruction construction is now handled by the Provider, 
+        # but we construct it here for OpenAI compatibility for now.
         system_instruction = f"Output ONLY valid JSON. Schema: {schema_hint}"
 
         try:
             if driver == 'gemini':
-                genai.configure(api_key=key if key else "")
-                m = genai.GenerativeModel(model or "gemini-1.5-flash")
-                self._log(LOG_DEBUG, f"Sending Gemini JSON request (Model: {model})")
-                response = m.generate_content(f"{system_instruction}\n\nRequest: {prompt}")
-                clean_text = response.text.replace("```json", "").replace("```", "").strip()
-                self._log(LOG_DEBUG, f"Raw JSON Response: {clean_text}")
-                return json.loads(clean_text)
+                self._log(LOG_DEBUG, "Driver: Gemini. Delegating to GeminiProvider...")
+                provider = GeminiProvider()
+                provider.configure(api_key=key if key else "", base_url=url)
+                
+                model_name = model or "gemini-1.5-flash"
+                self._log(LOG_DEBUG, f"Sending JSON request via provider (Model: {model_name})")
+                
+                result = provider.generate_json(model=model_name, prompt=prompt, schema_hint=schema_hint)
+                
+                # Provider returns a Dict already, but let's ensure logging matches
+                self._log(LOG_DEBUG, f"Raw JSON Response: {result}")
+                return result
             
             elif driver == 'openai_compatible':
+                # Note: Ideally this should also be moved to an OpenAIProvider class
                 target_url = url.rstrip('/') + "/chat/completions" if url else "http://localhost:11434/v1/chat/completions"
                 self._log(LOG_DEBUG, f"Sending OpenAI JSON request to {target_url}")
                 headers = {"Authorization": f"Bearer {key if key else ''}", "Content-Type": "application/json"}
