@@ -1,5 +1,7 @@
 # The Codex Engine (Alpha)
 
+This is being developed in python 3.12
+
 This is a refactor to use nodes with properties for all the data.  
 The only think left to fix is the ai generation. 
 
